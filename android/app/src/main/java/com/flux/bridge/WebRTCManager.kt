@@ -12,12 +12,31 @@ import android.util.Log
 import org.json.JSONObject
 
 class WebRTCManager(private val context: Context, private val listener: WebRTCListener) {
-    
     companion object {
         private var isFactoryInitialized = false
+        private var sharedFactory: PeerConnectionFactory? = null
+        
+        @Synchronized
+        fun getFactory(context: Context): PeerConnectionFactory {
+            if (!isFactoryInitialized) {
+                Log.d("HAZE_DEBUG", "WebRTCManager: Initializing Factory Statics")
+                PeerConnectionFactory.initialize(
+                    PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
+                        .createInitializationOptions()
+                )
+                isFactoryInitialized = true
+            }
+            if (sharedFactory == null) {
+                Log.d("HAZE_DEBUG", "WebRTCManager: Creating Shared Factory")
+                val options = PeerConnectionFactory.Options()
+                sharedFactory = PeerConnectionFactory.builder()
+                    .setOptions(options)
+                    .createPeerConnectionFactory()
+            }
+            return sharedFactory!!
+        }
     }
     
-    private var peerConnectionFactory: PeerConnectionFactory
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
     private var isWaitingForIceComplete = false
@@ -31,20 +50,7 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
     }
 
     init {
-        if (!isFactoryInitialized) {
-            Log.d("HAZE_DEBUG", "WebRTCManager Init: Initializing Factory Statics")
-            PeerConnectionFactory.initialize(
-                PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
-                    .createInitializationOptions()
-            )
-            isFactoryInitialized = true
-        }
-
-        val options = PeerConnectionFactory.Options()
-        peerConnectionFactory = PeerConnectionFactory.builder()
-            .setOptions(options)
-            .createPeerConnectionFactory()
-        Log.d("HAZE_DEBUG", "WebRTCManager Init: Factory Created")
+        // Factory is now handled via companion singleton to prevent disposal crashes
     }
 
     fun handleOffer(base64Offer: String) {
@@ -61,8 +67,8 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
-
-        peerConnection = peerConnectionFactory.createPeerConnection(rtcConfig, object : PeerObserver() {
+        val factory = getFactory(context)
+        peerConnection = factory.createPeerConnection(rtcConfig, object : PeerObserver() {
             override fun onIceCandidate(p0: IceCandidate) {
                 // Candidates are bundled in the SDP thanks to waiting for gathering complete
             }
@@ -327,12 +333,12 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
     fun close() {
         if (isDisposed) return
         isDisposed = true
-        Log.d("FLUX_DEBUG", "Cleaning up WebRTC Resources")
+        Log.d("FLUX_DEBUG", "Cleaning up WebRTC Session")
         dataChannel?.dispose()
         dataChannel = null
         peerConnection?.dispose()
         peerConnection = null
-        peerConnectionFactory.dispose()
+        // Shared factory is NOT disposed now to allow reconnection
     }
 }
 
