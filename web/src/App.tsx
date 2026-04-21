@@ -482,7 +482,7 @@ function App() {
           onFocus={() => bringToFront('telemetry')}
       >
           <div className="flex flex-col h-full bg-black/60 shadow-inner rounded border border-white/5 overflow-hidden m-2">
-              <div className="flex-1 relative">
+              <div className="flex-1 relative flex flex-col">
                   <Scene3D telemetryRef={telemetryRef} />
                   <div className="absolute top-2 left-2 flex items-center gap-1.5">
                       <div className={`w-1 h-1 rounded ${isConnected ? 'bg-[#00CCFF] animate-pulse shadow-[0_0_5px_#00ccff]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
