@@ -30,13 +30,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var sensorBridge: SensorBridge
     private var keepBackground = false
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (!keepBackground) {
-            if (this::rtcManager.isInitialized) rtcManager.close()
-            if (this::sensorBridge.isInitialized) sensorBridge.stop()
-        }
-    }
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,10 +127,12 @@ class MainActivity : ComponentActivity() {
                         "scan" -> {
                             Box(Modifier.fillMaxSize()) {
                                 QRScannerView { uri ->
-                                    Log.d("HAZE_DEBUG", "QR Scanned: $uri")
-                                    val base64 = uri.substring(7).trim()
-                                    rtcManager.handleOffer(base64)
-                                    currentStep = "connecting"
+                                    if (currentStep == "scan") {
+                                        Log.d("HAZE_DEBUG", "QR Scanned: $uri")
+                                        val base64 = uri.substring(7).trim()
+                                        currentStep = "connecting"
+                                        rtcManager.handleOffer(base64)
+                                    }
                                 }
                                 
                                 Button(

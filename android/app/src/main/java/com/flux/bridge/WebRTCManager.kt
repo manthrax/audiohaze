@@ -13,10 +13,15 @@ import org.json.JSONObject
 
 class WebRTCManager(private val context: Context, private val listener: WebRTCListener) {
     
+    companion object {
+        private var isFactoryInitialized = false
+    }
+    
     private var peerConnectionFactory: PeerConnectionFactory
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
     private var isWaitingForIceComplete = false
+    private var isDisposed = false
 
     interface WebRTCListener {
         fun onSignalGenerated(signal: String)
@@ -26,11 +31,14 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
     }
 
     init {
-        Log.d("HAZE_DEBUG", "WebRTCManager Init: Initializing Factory")
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(context)
-                .createInitializationOptions()
-        )
+        if (!isFactoryInitialized) {
+            Log.d("HAZE_DEBUG", "WebRTCManager Init: Initializing Factory Statics")
+            PeerConnectionFactory.initialize(
+                PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
+                    .createInitializationOptions()
+            )
+            isFactoryInitialized = true
+        }
 
         val options = PeerConnectionFactory.Options()
         peerConnectionFactory = PeerConnectionFactory.builder()
@@ -40,7 +48,11 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
     }
 
     fun handleOffer(base64Offer: String) {
-        Log.d("HAZE_DEBUG", "Handling Offer")
+        Log.d("HAZE_DEBUG", "Handling New Offer (Resetting state)")
+        peerConnection?.dispose()
+        peerConnection = null
+        isWaitingForIceComplete = false
+        
         val iceServers = emptyList<PeerConnection.IceServer>()
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
@@ -51,13 +63,13 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
         }
 
         peerConnection = peerConnectionFactory.createPeerConnection(rtcConfig, object : PeerObserver() {
-            override fun onIceCandidate(candidate: IceCandidate) {
+            override fun onIceCandidate(p0: IceCandidate) {
                 // Candidates are bundled in the SDP thanks to waiting for gathering complete
             }
 
-            override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) {
-                Log.d("FLUX_DEBUG", "ICE Gathering State: $newState")
-                if (newState == PeerConnection.IceGatheringState.COMPLETE) {
+            override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState) {
+                Log.d("FLUX_DEBUG", "ICE Gathering State: $p0")
+                if (p0 == PeerConnection.IceGatheringState.COMPLETE) {
                     if (isWaitingForIceComplete) {
                         isWaitingForIceComplete = false
                         val localSdp = peerConnection?.localDescription
@@ -69,13 +81,13 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
                 }
             }
 
-            override fun onDataChannel(channel: DataChannel) {
-                Log.d("FLUX_DEBUG", "onDataChannel received remotely: ${channel.label()}")
-                setupDataChannel(channel)
+            override fun onDataChannel(p0: DataChannel) {
+                Log.d("FLUX_DEBUG", "onDataChannel received remotely: ${p0.label()}")
+                setupDataChannel(p0)
             }
 
-            override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
-                if (newState == PeerConnection.PeerConnectionState.CONNECTED) {
+            override fun onConnectionChange(p0: PeerConnection.PeerConnectionState) {
+                if (p0 == PeerConnection.PeerConnectionState.CONNECTED) {
                     listener.onConnected()
                 }
             }
@@ -313,6 +325,8 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
     }
 
     fun close() {
+        if (isDisposed) return
+        isDisposed = true
         Log.d("FLUX_DEBUG", "Cleaning up WebRTC Resources")
         dataChannel?.dispose()
         dataChannel = null
