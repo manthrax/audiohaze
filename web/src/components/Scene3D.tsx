@@ -93,7 +93,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({ telemetryRef }) => {
             trailGeometry.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
             const trailMaterial = new THREE.LineBasicMaterial({ color: 0x00CCFF, linewidth: 2 });
             const trail = new THREE.Line(trailGeometry, trailMaterial);
-            scene.add(trail);
+            trail.frustumCulled = false;
+            phoneGroup.add(trail);
 
             let pointCount = 0;
             let lastTrailUpdate = 0;
@@ -118,6 +119,10 @@ export const Scene3D: React.FC<Scene3DProps> = ({ telemetryRef }) => {
                             lastTrailUpdate = now;
                         }
                     }
+                    // Keep camera centered on device
+                    const worldPos = new THREE.Vector3();
+                    boxRef.current.getWorldPosition(worldPos);
+                    controls.target.lerp(worldPos, 0.1);
                 }
                 controls.update();
                 renderer.render(scene, camera);
