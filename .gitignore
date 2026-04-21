@@ -1,0 +1,16 @@
+# Node
+node_modules/
+dist/
+.env
+.DS_Store
+
+# Android
+.gradle/
+build/
+*.iml
+.idea/
+local.properties
+.cxx/
+*.apk
+*.aar
+captures/
