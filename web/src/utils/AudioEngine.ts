@@ -8,6 +8,7 @@ export class AudioEngine {
   private readonly bufferSize = 44100 * 10;
   private circularBuffer = new Float32Array(this.bufferSize);
   private writeIdx = 0;
+  private activeSamples = 0;
   private gainNode: GainNode | null = null;
   public isRecording = false;
 
@@ -28,7 +29,7 @@ export class AudioEngine {
 
     const audioTracks = this.stream.getAudioTracks();
     if (audioTracks.length === 0) {
-      this.stopRecording();
+      this.terminate();
       throw new Error("No audio track found in display media. Did you check 'Share Audio'?");
     }
 
@@ -39,6 +40,16 @@ export class AudioEngine {
     this.isRecording = true;
   }
 
+  pauseRecording() {
+    this.isRecording = false;
+  }
+
+  resetBuffer() {
+    this.circularBuffer.fill(0);
+    this.writeIdx = 0;
+    this.activeSamples = 0;
+  }
+
   setGain(value: number) {
     if (this.gainNode) {
         this.gainNode.gain.setTargetAtTime(value, 0, 0.05);
@@ -46,23 +57,32 @@ export class AudioEngine {
   }
 
   getBufferData() {
-    // Return a copy of the circular buffer sorted relative to the writeIdx
-    const output = new Float32Array(this.bufferSize);
-    for (let i = 0; i < this.bufferSize; i++) {
-        output[i] = this.circularBuffer[(this.writeIdx + i) % this.bufferSize];
+    const totalActive = Math.min(this.activeSamples, this.bufferSize);
+    const output = new Float32Array(totalActive);
+    
+    if (this.activeSamples <= this.bufferSize) {
+      // Linear copy if we haven't wrapped yet
+      output.set(this.circularBuffer.subarray(0, totalActive));
+    } else {
+      // Re-order if we have wrapped
+      for (let i = 0; i < this.bufferSize; i++) {
+          output[i] = this.circularBuffer[(this.writeIdx + i) % this.bufferSize];
+      }
     }
     return output;
   }
 
   async getTrimmedBlob(startPct: number, endPct: number): Promise<Blob> {
-    const fullBuffer = this.getBufferData();
-    const startIdx = Math.floor(startPct * this.bufferSize);
-    const endIdx = Math.floor(endPct * this.bufferSize);
+    const activeData = this.getBufferData();
+    const activeLen = activeData.length;
+    
+    const startIdx = Math.floor(startPct * activeLen);
+    const endIdx = Math.floor(endPct * activeLen);
     const length = endIdx - startIdx;
     
     if (length <= 0) throw new Error("Invalid selection range");
 
-    const trimmed = fullBuffer.slice(startIdx, endIdx);
+    const trimmed = activeData.slice(startIdx, endIdx);
     
     // Convert to mono WAV for Android
     return this.encodeWav(trimmed);
@@ -127,6 +147,7 @@ export class AudioEngine {
         for (let i = 0; i < inputData.length; i++) {
             this.circularBuffer[this.writeIdx] = inputData[i];
             this.writeIdx = (this.writeIdx + 1) % this.bufferSize;
+            this.activeSamples++;
         }
     };
     
@@ -141,13 +162,25 @@ export class AudioEngine {
     tick();
   }
 
-  stopRecording() {
+  terminate() {
     this.isRecording = false;
     this.stream?.getTracks().forEach(t => t.stop());
     this.audioContext?.close();
     this.stream = null;
     this.audioContext = null;
     this.gainNode = null;
+  }
+
+  async playCurrentBuffer() {
+    if (!this.audioContext) return;
+    const data = this.getBufferData();
+    const audioBuffer = this.audioContext.createBuffer(1, data.length, 44100);
+    audioBuffer.getChannelData(0).set(data);
+    
+    const source = this.audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(this.audioContext.destination);
+    source.start();
   }
 
   /**

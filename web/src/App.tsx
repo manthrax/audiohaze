@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { AudioEngine } from './utils/AudioEngine'
 import { WaveformVisualizer } from './components/WaveformVisualizer'
 import { Scene3D } from './components/Scene3D'
-import { Zap, Radio, Save, Activity, Layers, PlayCircle, Send, CheckCircle, Wifi, MonitorSpeaker } from 'lucide-react'
+import { Zap, Radio, Save, Activity, Layers, PlayCircle, Send, CheckCircle, Wifi, MonitorSpeaker, Pause, Circle, RefreshCcw, Trash2, Play, Square } from 'lucide-react'
 import Peer from 'simple-peer'
 import { decodeSignal, encodeSignal, toHazeUri } from './utils/signaling'
 import jsQR from 'jsqr'
@@ -74,9 +74,24 @@ function App() {
   }
 
   const stopRecording = () => {
-    audioEngine.stopRecording()
+    audioEngine.pauseRecording()
     setIsRecording(false)
     setHasAudio(true)
+  }
+
+  const handleReset = () => {
+    audioEngine.resetBuffer()
+    setHasAudio(false)
+  }
+
+  const handleAudition = () => {
+    audioEngine.playCurrentBuffer()
+  }
+
+  const terminateAudio = () => {
+    audioEngine.terminate()
+    setIsRecording(false)
+    setHasAudio(false)
   }
 
   // ----- Connection Handling -----
@@ -342,11 +357,11 @@ function App() {
           title="Sample Buffer" 
           icon={<Radio className="w-full h-full" />} 
           initialX={355} initialY={60} 
-          initialWidth={500} initialHeight={240}
+          initialWidth={500} initialHeight={320}
           zIndex={zIndices.audio} 
           onFocus={() => bringToFront('audio')}
       >
-          <div className="flex flex-col h-full justify-between">
+          <div className="flex flex-col h-full">
               <div className="flex justify-between items-center mb-2 px-2 pt-2">
                   <div className="flex items-center gap-2">
                       {isRecording ? (
@@ -370,15 +385,44 @@ function App() {
                   )}
               </div>
 
-              <div className="flex-1 bg-black/40 shadow-inner rounded overflow-hidden border border-white/5 p-1 mx-2 mb-2 h-full min-h-[80px] relative">
+              <div className="flex items-center gap-1.5 px-2 py-1 border-b border-white/5 bg-black/20">
+                  <button 
+                      onClick={isRecording ? stopRecording : startRecording}
+                      className={`p-1.5 rounded-full transition-all ${isRecording ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/5 text-zinc-400 hover:text-white'}`}
+                      title={isRecording ? "Stop Recording" : "Start Recording"}
+                  >
+                      {isRecording ? <Square className="w-3 h-3 fill-current" /> : <Circle className="w-3 h-3" />}
+                  </button>
+
+                  <div className="w-px h-3 bg-white/10 mx-0.5" />
+
+                  <button 
+                      onClick={handleAudition}
+                      disabled={!hasAudio}
+                      className={`p-1.5 rounded transition-all ${hasAudio ? 'text-[#00CCFF] hover:bg-[#00CCFF]/10' : 'text-zinc-600 cursor-not-allowed'}`}
+                      title="Play Buffer"
+                  >
+                      <Play className="w-3 h-3" />
+                  </button>
+
+                  <button 
+                      onClick={handleReset}
+                      className="p-1.5 rounded text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all ml-auto"
+                      title="Reset Buffer"
+                  >
+                      <RefreshCcw className="w-3 h-3" />
+                  </button>
+              </div>
+
+              <div className="flex-1 min-h-[150px] relative bg-black/40 overflow-hidden flex flex-col">
                   <WaveformVisualizer 
                       audioEngine={audioEngine} 
                       isRecording={isRecording}
                       onRangeChange={setRange}
                   />
                   {!hasAudio && !isRecording && (
-                      <div className="absolute inset-0 flex items-center justify-center text-[10px] uppercase font-mono tracking-widest text-[#00CCFF]/50 pointer-events-none">
-                          No Data In Buffer
+                      <div className="absolute inset-0 flex items-center justify-center text-[10px] uppercase font-mono tracking-widest text-[#00CCFF]/30 pointer-events-none">
+                          Ready for Capture
                       </div>
                   )}
               </div>

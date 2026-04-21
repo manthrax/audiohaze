@@ -39,6 +39,13 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
     renderer.setClearColor(0x111111, 1.0); 
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
+    renderer.domElement.style.display = 'block';
+    renderer.domElement.style.position = 'absolute';
+    renderer.domElement.style.top = '0';
+    renderer.domElement.style.left = '0';
+    
     containerRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
@@ -128,6 +135,11 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
           }
       }
 
+      // Emergency recovery if initialized at 0x0
+      if (renderer.domElement.width === 0 && containerRef.current && containerRef.current.clientWidth > 0) {
+        renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
+      }
+
       textureRef.current.needsUpdate = true;
       mat.uniforms.time.value = t / 1000;
       rendererRef.current.render(sceneRef.current, cameraRef.current);
@@ -140,7 +152,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
       const w = containerRef.current.clientWidth;
       const h = containerRef.current.clientHeight;
       if (w > 0 && h > 0) {
-        rendererRef.current.setSize(w, h, false);
+        rendererRef.current.setSize(w, h);
       }
     });
     resizeObserver.observe(containerRef.current);
@@ -207,13 +219,16 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
   };
 
   return (
-    <div 
-        ref={containerRef} 
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerUp}
-        className="w-full h-full min-h-[150px] cursor-ew-resize select-none touch-none"
-    />
+    <div className="relative w-full h-full min-h-[150px]">
+      <div className="absolute top-2 left-2 text-xs text-white/50 pointer-events-none z-10">Waveform</div>
+      <div 
+          ref={containerRef} 
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerUp}
+          className="w-full h-full cursor-ew-resize select-none touch-none"
+      />
+    </div>
   );
 };
