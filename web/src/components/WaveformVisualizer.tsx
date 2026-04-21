@@ -1,17 +1,17 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { audioEngine } from '../utils/AudioEngine';
+import { AudioEngine } from '../utils/AudioEngine';
 
 interface WaveformVisualizerProps {
-  isStatic?: boolean;
-  rangeStart?: number;
-  rangeEnd?: number;
+  audioEngine: AudioEngine;
+  isRecording: boolean;
+  onRangeChange?: (range: [number, number]) => void;
 }
 
-const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ 
-  isStatic = false, 
-  rangeStart = 0, 
-  rangeEnd = 1 
+export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ 
+  audioEngine,
+  isRecording,
+  onRangeChange
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -20,7 +20,6 @@ const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
   const textureRef = useRef<THREE.DataTexture | null>(null);
   const materialRef = useRef<THREE.ShaderMaterial | null>(null);
   
-  const staticBufferRef = useRef<Float32Array | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -107,22 +106,22 @@ const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
     const plane = new THREE.Mesh(geometry, material);
     scene.add(plane);
 
+    let animId: number;
     const animate = (t: number) => {
       if (!rendererRef.current || !sceneRef.current || !cameraRef.current || !textureRef.current || !materialRef.current) return;
       
       const mat = materialRef.current;
       const texData = textureRef.current.image.data as Float32Array;
 
-      if (mat.uniforms.isStatic.value > 0.5) {
-          // Static Mode: Render full 10s buffer
+      if (!isRecording) {
+          // Display the 10s circular buffer
           const fullBuffer = audioEngine.getBufferData();
-          // Downsample for texture
           for (let i = 0; i < size; i++) {
               const idx = Math.floor((i / size) * fullBuffer.length);
               texData[i * 4] = fullBuffer[idx];
           }
       } else {
-          // Live mode
+          // Live pulse mode
           const latest = audioEngine.latestData;
           for (let i = 0; i < latest.length; i++) {
               texData[i * 4] = latest[i];
@@ -132,36 +131,89 @@ const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
       textureRef.current.needsUpdate = true;
       mat.uniforms.time.value = t / 1000;
       rendererRef.current.render(sceneRef.current, cameraRef.current);
-      requestAnimationFrame(animate);
+      animId = requestAnimationFrame(animate);
     };
-    requestAnimationFrame(animate);
+    animId = requestAnimationFrame(animate);
 
-    const handleResize = () => {
+    const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current || !rendererRef.current) return;
       const w = containerRef.current.clientWidth;
       const h = containerRef.current.clientHeight;
-      rendererRef.current.setSize(w, h);
-    };
-    window.addEventListener('resize', handleResize);
+      if (w > 0 && h > 0) {
+        rendererRef.current.setSize(w, h, false);
+      }
+    });
+    resizeObserver.observe(containerRef.current);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(animId);
+      resizeObserver.disconnect();
       renderer.dispose();
       geometry.dispose();
       material.dispose();
       texture.dispose();
-      containerRef.current?.removeChild(renderer.domElement);
+      if (containerRef.current && renderer.domElement.parentNode === containerRef.current) {
+        containerRef.current.removeChild(renderer.domElement);
+      }
+      rendererRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     if (materialRef.current) {
-        materialRef.current.uniforms.isStatic.value = isStatic ? 1.0 : 0.0;
-        materialRef.current.uniforms.selection.value.set(rangeStart, rangeEnd);
+        materialRef.current.uniforms.isStatic.value = isRecording ? 0.0 : 1.0;
     }
-  }, [isStatic, rangeStart, rangeEnd]);
+  }, [isRecording]);
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: '150px' }} />;
+  const [localRange, setLocalRange] = useState<[number, number]>([0, 1]);
+  const isAdjusting = useRef<'start' | 'end' | null>(null);
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+      if (isRecording || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      
+      // Determine if we're closer to start or end marker
+      const distStart = Math.abs(x - localRange[0]);
+      const distEnd = Math.abs(x - localRange[1]);
+      
+      isAdjusting.current = distStart < distEnd ? 'start' : 'end';
+      updateRange(x);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!isAdjusting.current || !containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    updateRange(x);
+  };
+
+  const handlePointerUp = () => {
+    isAdjusting.current = null;
+  };
+
+  const updateRange = (x: number) => {
+      const newRange: [number, number] = [...localRange];
+      if (isAdjusting.current === 'start') {
+          newRange[0] = Math.min(x, localRange[1] - 0.05);
+      } else {
+          newRange[1] = Math.max(x, localRange[0] + 0.05);
+      }
+      setLocalRange(newRange);
+      onRangeChange?.(newRange);
+      if (materialRef.current) {
+          materialRef.current.uniforms.selection.value.set(newRange[0], newRange[1]);
+      }
+  };
+
+  return (
+    <div 
+        ref={containerRef} 
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+        className="w-full h-full min-h-[150px] cursor-ew-resize select-none touch-none"
+    />
+  );
 };
-
-export default WaveformVisualizer;

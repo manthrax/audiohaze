@@ -11,6 +11,15 @@ export class AudioEngine {
   private gainNode: GainNode | null = null;
   public isRecording = false;
 
+  isReady(): boolean {
+    return this.audioContext !== null && this.audioContext.state === 'running';
+  }
+
+  async initialize() {
+    const stream = await this.startCapture();
+    await this.setupAnalysis(stream);
+  }
+
   async startCapture(): Promise<MediaStream> {
     this.stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
@@ -19,12 +28,15 @@ export class AudioEngine {
 
     const audioTracks = this.stream.getAudioTracks();
     if (audioTracks.length === 0) {
-      this.stop();
+      this.stopRecording();
       throw new Error("No audio track found in display media. Did you check 'Share Audio'?");
     }
 
-    this.isRecording = true;
     return this.stream;
+  }
+
+  startRecording() {
+    this.isRecording = true;
   }
 
   setGain(value: number) {
@@ -129,7 +141,7 @@ export class AudioEngine {
     tick();
   }
 
-  stop() {
+  stopRecording() {
     this.isRecording = false;
     this.stream?.getTracks().forEach(t => t.stop());
     this.audioContext?.close();

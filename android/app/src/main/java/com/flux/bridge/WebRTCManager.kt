@@ -314,10 +314,11 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
 
     fun close() {
         Log.d("FLUX_DEBUG", "Cleaning up WebRTC Resources")
-        dataChannel?.close()
+        dataChannel?.dispose()
         dataChannel = null
-        peerConnection?.close()
+        peerConnection?.dispose()
         peerConnection = null
+        peerConnectionFactory.dispose()
     }
 }
 

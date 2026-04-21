@@ -1,107 +1,132 @@
 import { useState, useRef, useEffect } from 'react'
-import jsQR from "jsqr"
-import { Mic, Zap, Smartphone, CheckCircle, Shield, Camera, Play, Pause } from 'lucide-react'
-import { QRCodeCanvas } from 'qrcode.react'
-import WaveformVisualizer from './components/WaveformVisualizer'
-import Scene3D from './components/Scene3D'
-import { audioEngine } from './utils/AudioEngine'
-import { encodeSignal, decodeSignal, toHazeUri } from './utils/signaling'
-import { transcoder } from './utils/Transcoder'
-import { FileTransfer } from './utils/FileTransfer'
+import { AudioEngine } from './utils/AudioEngine'
+import { WaveformVisualizer } from './components/WaveformVisualizer'
+import { Scene3D } from './components/Scene3D'
+import { Zap, Radio, Save, Activity, Layers, PlayCircle, Send, CheckCircle, Wifi, MonitorSpeaker } from 'lucide-react'
 import Peer from 'simple-peer'
+import { decodeSignal, encodeSignal, toHazeUri } from './utils/signaling'
+import jsQR from 'jsqr'
+import { QRCodeCanvas } from 'qrcode.react'
+import { FileTransfer } from './utils/FileTransfer'
+import { DraggableWindow } from './components/DraggableWindow'
 
-type Step = 'welcome' | 'record' | 'pair' | 'sync' | 'beaming' | 'success'
-
-interface Orientation { w: number, x: number, y: number, z: number }
-
-declare global {
-  interface Window {
-    lastHazeUpdate?: number;
-  }
+interface Orientation {
+  x: number
+  y: number
+  z: number
+  w: number
+  px?: number
+  py?: number
+  pz?: number
 }
 
-export default function App() {
-  const [step, setStep] = useState<Step>('welcome')
-  const [offerQr, setOfferQr] = useState<string>('')
-  const [peer, setPeer] = useState<Peer.Instance | null>(null)
-  const [orientation, setOrientation] = useState<Orientation | null>(null)
-  const [transferProgress, setTransferProgress] = useState(0)
-  const [availableSlots, setAvailableSlots] = useState<string[]>([])
-  const [targetSlot, setTargetSlot] = useState<string>('NOTIFICATION')
-  const [isPaused, setIsPaused] = useState(false);
-  const [gain, setGain] = useState(1.0);
-  const [range, setRange] = useState<[number, number]>([0.2, 0.8]);
+function App() {
+  // App Core States
+  const [isRecording, setIsRecording] = useState(false)
+  const [hasAudio, setHasAudio] = useState(false)
+  const [range, setRange] = useState<[number, number]>([0, 1])
   
-  const videoRef = useRef<HTMLVideoElement>(null)
+  // Connection States
+  const [isConnected, setIsConnected] = useState(false)
+  const [offerQr, setOfferQr] = useState<string | null>(null)
+  
+  // Deployment States
+  const [availableSlots, setAvailableSlots] = useState<string[]>([])
+  const [targetSlot, setTargetSlot] = useState<string>('')
+  const [isBeaming, setIsBeaming] = useState(false)
+  const [transferProgress, setTransferProgress] = useState(0)
+  const [deployResult, setDeployResult] = useState<'success' | 'failed' | null>(null);
+
+  // Telemetry Cache
   const telemetryRef = useRef<number[] | null>(null)
+  const [orientation, setOrientation] = useState<Orientation | null>(null)
 
-  const togglePause = () => {
-    const newState = !isPaused;
-    setIsPaused(newState);
-    audioEngine.isRecording = !newState;
+  // System References
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [peer, setPeer] = useState<Peer.Instance | null>(null)
+  const [audioEngine] = useState(() => new AudioEngine())
+
+  // Window Management
+  const [zIndices, setZIndices] = useState({
+      audio: 10,
+      remote: 11,
+      tools: 12,
+      telemetry: 13
+  });
+  
+  const bringToFront = (windowId: keyof typeof zIndices) => {
+      const maxZ = Math.max(...Object.values(zIndices));
+      setZIndices(prev => ({ ...prev, [windowId]: maxZ + 1 }));
   };
 
-  const updateGain = (val: number) => {
-    setGain(val);
-    audioEngine.setGain(val);
-  };
-
-  const startFlow = async () => {
-    console.log("startFlow triggered");
+  // ----- Audio Handling -----
+  const startRecording = async () => {
     try {
-      console.log("Attempting to capture stream...");
-      const stream = await audioEngine.startCapture()
-      console.log("Stream captured successfully:", stream.id);
-      setStep('record')
-      console.log("setStep('record') called");
-      audioEngine.setupAnalysis(stream)
-    } catch (err: any) {
-      console.error(err)
-      const isSsl = window.location.protocol === 'https:'
-      alert(
-        `Capture failed. ${!isSsl ? 'You MUST use HTTPS for streaming (currently in early access SSL mode).' : ''} \n\n` +
-        "Ensure you check the 'Share system audio' box at the bottom-left of the selection window."
-      )
+      if (!audioEngine.isReady()) {
+        await audioEngine.initialize()
+      }
+      audioEngine.startRecording()
+      setIsRecording(true)
+      setHasAudio(false) // Reset previous buffer
+    } catch (e) {
+      console.error("Audio access denied or failed", e)
     }
   }
 
-  const prepareSync = () => {
-    setStep('pair')
-    // Initialize WebRTC Offer with DataChannel
-    const p = new Peer({
-      initiator: true,
-      trickle: false, 
-      config: { iceServers: [] } // No ICE servers = only Host candidates (smallest SDP)
-    })
+  const stopRecording = () => {
+    audioEngine.stopRecording()
+    setIsRecording(false)
+    setHasAudio(true)
+  }
 
+  // ----- Connection Handling -----
+  useEffect(() => {
+    // Generate initial offer
+    const p = new Peer({ initiator: true, trickle: false })
+    
     p.on('signal', data => {
-      // Signal contains the SDP
-      const encoded = encodeSignal(data)
-      setOfferQr(toHazeUri(encoded))
+      const encoded = encodeSignal(data);
+      if (encoded.length < 2500) { 
+        setOfferQr(toHazeUri(encoded));
+      } else {
+        console.error("Signal too large for QR:", encoded.length);
+      }
     })
 
     p.on('connect', () => {
       console.log("P2P Connected")
-      setStep('sync')
+      setIsConnected(true)
     })
+
+    p.on('error', (err) => {
+        console.error("Peer Error:", err);
+    });
+
+    p.on('close', () => {
+        console.log("Peer Closed");
+        setIsConnected(false);
+        setPeer(null);
+    });
 
     p.on('data', data => {
       try {
           const raw = new TextDecoder().decode(data)
           const json = JSON.parse(raw)
           if (json.q) {
-              // Direct memory write for WebGL loop
               telemetryRef.current = json.q;
-              
-              // Throttle React state visually to ~10hz
               const now = Date.now();
-              if (!window.lastHazeUpdate || now - window.lastHazeUpdate > 100) {
-                  window.lastHazeUpdate = now;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              if (!(window as any).lastHazeUpdate || now - (window as any).lastHazeUpdate > 100) {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  (window as any).lastHazeUpdate = now;
                   setOrientation({
                       w: json.q[0],
                       x: json.q[1],
                       y: json.q[2],
                       z: json.q[3],
+                      px: json.q[4],
+                      py: json.q[5],
+                      pz: json.q[6],
                   })
               }
           }
@@ -109,58 +134,41 @@ export default function App() {
               setAvailableSlots(json.slots)
               setTargetSlot(json.slots[0])
           }
-      } catch (e) {}
+      } catch (e) {
+          // ignore parsing errors on binary or non-json data
+      }
     })
 
     setPeer(p)
-  }
+  }, [])
 
-  const handleFinalize = async () => {
-    if (!peer || !targetSlot) return;
-    setStep('beaming');
-    setTransferProgress(0);
-
+  const simulateAnswer = (answerEncoded: string) => {
+    if(!peer) return;
     try {
-        const audioBlob = await audioEngine.getTrimmedBlob(range[0], range[1]);
-        const transfer = new FileTransfer(peer, (progress) => {
-            setTransferProgress(progress);
-        });
-
-        await transfer.sendFile(audioBlob, 'haze_notification.wav', targetSlot, false);
-        setStep('success');
+        const signal = decodeSignal(answerEncoded)
+        peer.signal(signal)
     } catch (e) {
-        console.error("Transfer failed", e);
-        setStep('sync');
+        console.error("Invalid Answer", e)
     }
   }
 
-  const handlePreview = async () => {
-    if (!peer) return;
-    // We don't change step for preview to keep the UI interactive
-    try {
-        const audioBlob = await audioEngine.getTrimmedBlob(range[0], range[1]);
-        const transfer = new FileTransfer(peer, (p) => setTransferProgress(p));
-        await transfer.sendFile(audioBlob, 'haze_preview.wav', 'PREVIEW', true);
-    } catch (e) {
-        console.error("Preview failed", e);
-    }
-  }
-
-
-  // Webcam & QR Scanning Logic
+  // ----- Webcam Lifecycle Management -----
   useEffect(() => {
     let stream: MediaStream | null = null;
     let animId: number;
 
     const startWebcam = async () => {
-      if (step === 'pair' && videoRef.current) {
+      if (!isConnected && videoRef.current) {
         try {
           stream = await navigator.mediaDevices.getUserMedia({ 
             video: { facingMode: 'user', width: 1280, height: 720 } 
           });
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
-            videoRef.current.play();
+            videoRef.current.play().catch(e => {
+                // Ignore innocuous AbortErrors caused by fast strict-mode re-renders
+                console.log("Video play interrupted (safe to ignore):", e);
+            });
           }
         } catch (err) {
           console.error("Webcam Access Failed", err);
@@ -173,18 +181,20 @@ export default function App() {
         stream.getTracks().forEach(t => t.stop());
         stream = null;
       }
+      if (videoRef.current) {
+          videoRef.current.srcObject = null;
+      }
     };
 
-    if (step === 'pair') {
+    if (!isConnected) {
       startWebcam();
       
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
-
       let answered = false;
 
       const scan = () => {
-        if (!videoRef.current || !ctx || step !== 'pair') return;
+        if (!videoRef.current || !ctx || isConnected) return;
         
         if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
             canvas.height = videoRef.current.videoHeight;
@@ -200,7 +210,6 @@ export default function App() {
                 const encoded = code.data.substring(7);
                 answered = true;
                 simulateAnswer(encoded);
-                // Stop scanning locally
                 return;
             }
         }
@@ -216,15 +225,42 @@ export default function App() {
       stopWebcam();
       if (animId) cancelAnimationFrame(animId);
     };
-  }, [step]);
+  }, [isConnected, peer]);
 
-  const simulateAnswer = (answerEncoded: string) => {
-    if(!peer) return;
+  // ----- Deployment Flow -----
+  const handleFinalize = async () => {
+    if (!peer || !targetSlot) return;
+    setIsBeaming(true);
+    setTransferProgress(0);
+    setDeployResult(null);
+
     try {
-        const signal = decodeSignal(answerEncoded)
-        peer.signal(signal)
+        const audioBlob = await audioEngine.getTrimmedBlob(range[0], range[1]);
+        const transfer = new FileTransfer(peer, (progress) => {
+            setTransferProgress(progress);
+        });
+
+        await transfer.sendFile(audioBlob, 'haze_notification.wav', targetSlot, false);
+        setDeployResult('success');
     } catch (e) {
-        console.error("Invalid Answer", e)
+        console.error("Transfer failed", e);
+        setDeployResult('failed');
+    } finally {
+        setTimeout(() => setIsBeaming(false), 2000); 
+    }
+  }
+
+  const handlePreview = async () => {
+    if (!peer || !hasAudio) return;
+    try {
+        const audioBlob = await audioEngine.getTrimmedBlob(range[0], range[1]);
+        const transfer = new FileTransfer(peer, (p) => setTransferProgress(p));
+        setIsBeaming(true);
+        await transfer.sendFile(audioBlob, 'haze_preview.wav', 'PREVIEW', true);
+        setIsBeaming(false);
+    } catch (e) {
+        console.error("Preview failed", e);
+        setIsBeaming(false);
     }
   }
 
@@ -234,293 +270,244 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#050505] text-white overflow-hidden relative">
+    <div className="fixed inset-0 bg-[#050505] text-white overflow-hidden selection:bg-[#00CCFF]/30 desktop-wallpaper">
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full max-w-[1200px] max-h-[1200px] bg-[#00CCFF]/5 rounded-full blur-[200px] pointer-events-none -z-0" />
       
-      {/* Background Decorative Element */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-[#00CCFF]/5 rounded-full blur-[150px] pointer-events-none -z-0" />
-      
-      <header className="absolute top-8 left-1/2 -translate-x-1/2 flex items-center gap-3 w-full justify-center">
-        <div className="p-2 border border-[#00CCFF] rounded-lg shadow-[0_0_15px_rgba(0,204,255,0.3)]">
-          <Zap className="w-6 h-6 text-[#00CCFF]" />
-        </div>
-        <h1 className="text-2xl font-bold tracking-tight">HazeBridge <span className="text-[#00CCFF] font-light">Framework</span></h1>
+      {/* Desktop Taskbar / Header */}
+      <header className="absolute top-4 left-4 right-4 flex items-center justify-between z-0 pointer-events-none opacity-50 px-4">
+          <div className="flex items-center gap-3">
+              <div className="p-1 border border-[#00CCFF] rounded shadow-[0_0_15px_rgba(0,204,255,0.3)] bg-black/50">
+                  <Zap className="w-4 h-4 text-[#00CCFF]" />
+              </div>
+              <h1 className="text-sm font-bold tracking-tight text-white drop-shadow-md">HazeBridge <span className="text-[#00CCFF] font-light">Editor</span></h1>
+          </div>
+          
+          <div className="flex gap-6 items-center">
+             <div className="flex items-center gap-2 text-[9px] uppercase font-mono text-zinc-400 tracking-tighter bg-black/40 px-2 py-1 rounded border border-white/5 shadow-md">
+                <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse shadow-[0_0_8px_#22c55e]' : 'bg-red-500 shadow-[0_0_8px_#ef4444]'}`} />
+                {isConnected ? 'P2P Linked' : 'Awaiting Peer'}
+             </div>
+          </div>
       </header>
 
-      {/* Main Container */}
-      <main className="w-full max-w-4xl glass-panel p-10 flex flex-col items-center min-h-[500px]">
-        
-        {step === 'welcome' && (
-          <div className="text-center space-y-8 animate-in fade-in duration-700">
-            <div className="space-y-4">
-              <h2 className="text-4xl font-bold">HazeBridge <span className="neon-text">Client</span></h2>
-              <p className="text-secondary max-w-xl mx-auto">
-                Connect your Android device as a remote sensor and I/O platform via local P2P WebRTC.
-              </p>
-            </div>
-            
-            <div className="grid grid-cols-4 gap-4 py-6">
-              <div className="flex flex-col items-center gap-2">
-                <Zap className="w-8 h-8 text-secondary" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-secondary">6DOF Motion</span>
-              </div>
-              <div className="flex flex-col items-center gap-2">
-                <Shield className="w-8 h-8 text-secondary" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-secondary">Secured P2P</span>
-              </div>
-              <div className="flex flex-col items-center gap-2">
-                <Smartphone className="w-8 h-8 text-secondary" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-secondary">Remote I/O</span>
-              </div>
-              <div className="flex flex-col items-center gap-2">
-                <Mic className="w-8 h-8 text-secondary" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-secondary">System Audio</span>
-              </div>
-            </div>
+      {/* FLOATING WINDOWS - DESKTOP SPACE */}
 
-            <button onClick={startFlow} className="electric-button px-12 py-4 text-lg">
-                Initialize Bridge
-            </button>
-          </div>
-        )}
-
-        {step === 'record' && (
-          <div className="w-full h-full flex flex-col items-center space-y-6 animate-in fade-in">
-             <div className="w-full min-h-[300px] bg-black/40 rounded-2xl border border-white/5 relative z-10 overflow-hidden group">
-                <WaveformVisualizer isStatic={isPaused} rangeStart={range[0]} rangeEnd={range[1]} />
-                
-                <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none">
-                    <div className={isPaused ? "w-2 h-2 rounded-full bg-zinc-600" : "recording-indicator"} />
-                    <span className="text-xs font-mono text-secondary uppercase tracking-widest">
-                        {isPaused ? "Buffer Paused (10s)" : "Direct Loopback"}
-                    </span>
-                </div>
-
-                {isPaused && (
-                    <div className="absolute inset-x-0 bottom-0 h-12 bg-black/60 backdrop-blur-md flex items-center px-8 border-t border-white/10">
-                        <input 
-                            type="range" min="0" max="1" step="0.01" 
-                            value={range[0]} onChange={e => setRange([parseFloat(e.target.value), range[1]])}
-                            className="flex-1 accent-[#00CCFF] opacity-50 hover:opacity-100 transition-opacity"
-                        />
-                        <div className="w-px h-4 bg-white/20 mx-4" />
-                        <input 
-                            type="range" min="0" max="1" step="0.01" 
-                            value={range[1]} onChange={e => setRange([range[0], parseFloat(e.target.value)])}
-                            className="flex-1 accent-[#00CCFF] opacity-50 hover:opacity-100 transition-opacity"
-                        />
-                    </div>
-                )}
-             </div>
-
-             <div className="flex items-center gap-8 w-full max-w-md bg-zinc-900/50 p-4 rounded-xl border border-white/5">
-                <button onClick={togglePause} className="p-3 bg-[#00CCFF]/10 text-[#00CCFF] rounded-full hover:bg-[#00CCFF]/20 transition-colors">
-                    {isPaused ? <Play className="w-6 h-6" /> : <Pause className="w-6 h-6" />}
-                </button>
-                
-                <div className="flex-1 space-y-2">
-                    <div className="flex justify-between text-[10px] font-mono text-secondary uppercase">
-                        <span>Output Gain</span>
-                        <span>{Math.round(gain * 100)}%</span>
-                    </div>
-                    <input 
-                        type="range" min="0" max="2" step="0.1" 
-                        value={gain} onChange={e => updateGain(parseFloat(e.target.value))}
-                        className="w-full accent-[#00CCFF]"
-                    />
-                </div>
-             </div>
-
-             <div className="text-center space-y-2">
-                <h3 className="text-xl font-medium text-secondary">Capture Engine Active</h3>
-                <p className="text-sm text-zinc-500">Isolate your sample in the 10s buffer, then sync to agent.</p>
-             </div>
-
-             <div className="flex gap-4">
-                <button onClick={handlePreview} className="px-6 py-3 bg-white/5 border border-white/10 rounded-full hover:bg-white/10 transition-all text-xs font-mono uppercase tracking-widest text-zinc-400">
-                    Preview on Device
-                </button>
-                <button onClick={prepareSync} className="electric-button">
-                    Finalize Sample
-                </button>
-             </div>
-          </div>
-        )}
-
-        {step === 'pair' && (
-          <div className="flex flex-col items-center space-y-8 w-full animate-in fade-in zoom-in duration-500 text-center">
-            <div className="flex flex-col items-center space-y-6">
-               <div className="flex flex-col items-center gap-2">
-                  <span className="text-[10px] font-mono text-[#00CCFF] uppercase tracking-widest bg-[#00CCFF]/10 px-4 py-1 rounded-full">Signaling Phase: Offer</span>
-                  <h2 className="text-2xl font-bold">Establish P2P Link</h2>
-               </div>
-
-               <div className="p-6 bg-white rounded-3xl overflow-hidden shadow-[0_0_80px_rgba(0,204,255,0.3)] border-4 border-[#00CCFF]/30 mx-auto">
-                  {offerQr ? (
-                    <QRCodeCanvas 
-                      value={offerQr} 
-                      size={400} 
-                      level="M" 
-                      includeMargin={false}
-                    />
-                  ) : (
-                    <div className="w-[400px] h-[400px] flex items-center justify-center text-black font-mono text-xs">
-                      <div className="animate-pulse">GENERATING_OFFER...</div>
+      {/* 1. Remote / Comms Hub */}
+      <DraggableWindow 
+          title="Communications Hub" 
+          icon={<Wifi className="w-full h-full" />} 
+          initialX={10} initialY={60} 
+          initialWidth={340} initialHeight={480}
+          zIndex={zIndices.remote} 
+          onFocus={() => bringToFront('remote')}
+      >
+          {!isConnected ? (
+              <div className="flex flex-col items-center justify-center p-2 h-full text-center space-y-1.5">
+                  <div>
+                      <MonitorSpeaker className="w-6 h-6 text-[#00CCFF] mx-auto mb-1 opacity-50" />
+                      <p className="text-[9px] text-zinc-400 font-mono">Launch Haze on Android and scan this Offer.</p>
+                  </div>
+                  
+                  {offerQr && (
+                    <div className="p-2 bg-white rounded flex-shrink-0 shadow-[0_0_20px_rgba(255,255,255,0.2)]">
+                        <QRCodeCanvas value={offerQr} size={240} bgColor="#FFFFFF" fgColor="#000000" includeMargin={true} />
                     </div>
                   )}
-               </div>
 
-               <div className="max-w-sm space-y-3">
-                 <p className="text-sm text-zinc-400 leading-relaxed px-4">
-                   Scan this QR code with the HazeBridge Agent. 
-                 </p>
-                 <div className="flex items-center justify-center gap-4 text-[10px] uppercase font-mono text-zinc-500">
-                    <span className="flex items-center gap-1"><CheckCircle className="w-3 h-3 text-green-500" /> Host Only</span>
-                    <span className="flex items-center gap-1"><CheckCircle className="w-3 h-3 text-green-500" /> ZLIB Compressed</span>
-                 </div>
-               </div>
-            </div>
+                  <div className="w-full flex-1 min-h-[100px] bg-black rounded overflow-hidden relative border border-[#00CCFF]/20 group">
+                      <video ref={videoRef} playsInline autoPlay muted className="w-full h-full object-cover shadow-inner opacity-80" />
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                         <div className="w-16 h-16 border border-[#00CCFF]/30 bg-[#00CCFF]/10 rounded animate-pulse" />
+                      </div>
+                      <div className="absolute bottom-1 left-0 right-0 text-[8px] font-mono text-center text-[#00CCFF] bg-black/60 py-0.5">
+                          SCANNING...
+                      </div>
+                  </div>
+              </div>
+          ) : (
+              <div className="flex flex-col items-center justify-center m-2 h-full text-center space-y-4 bg-black/40 rounded border border-green-500/10">
+                  <div className="w-16 h-16 rounded bg-green-500/10 flex items-center justify-center border border-green-500/20 shadow-[0_0_30px_rgba(34,197,94,0.2)]">
+                      <Zap className="w-8 h-8 text-green-500" />
+                  </div>
+                  <div>
+                      <h3 className="text-sm font-bold text-white mb-1">Connected</h3>
+                      <p className="text-[9px] text-zinc-400 font-mono leading-tight">Agent Online<br/>Webcam Hardware Disengaged</p>
+                  </div>
+              </div>
+          )}
+      </DraggableWindow>
 
-            <div className="h-[1px] w-64 bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
+      {/* 2. Audio Capture */}
+      <DraggableWindow 
+          title="Sample Buffer" 
+          icon={<Radio className="w-full h-full" />} 
+          initialX={355} initialY={60} 
+          initialWidth={500} initialHeight={240}
+          zIndex={zIndices.audio} 
+          onFocus={() => bringToFront('audio')}
+      >
+          <div className="flex flex-col h-full justify-between">
+              <div className="flex justify-between items-center mb-2 px-2 pt-2">
+                  <div className="flex items-center gap-2">
+                      {isRecording ? (
+                          <button onClick={stopRecording} className="w-6 h-6 flex items-center justify-center rounded bg-zinc-800 hover:bg-zinc-700 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(239,68,68,0.3)] transition-all border border-red-500/20">
+                              <div className="w-2 h-2 bg-red-500 rounded-sm" />
+                          </button>
+                      ) : (
+                          <button onClick={startRecording} className="w-6 h-6 flex items-center justify-center rounded bg-[#00CCFF]/10 hover:bg-[#00CCFF]/20 hover:-translate-y-0.5 hover:shadow-[0_0_15px_rgba(0,204,255,0.3)] transition-all border border-[#00CCFF]/20 group">
+                              <div className="w-2 h-2 bg-[#00CCFF] rounded group-hover:scale-110 transition-transform" />
+                          </button>
+                      )}
+                      <div>
+                          <p className="text-[10px] font-bold font-mono leading-none">{isRecording ? 'Capturing Flow' : 'Ready'}</p>
+                          <p className="text-[8px] text-zinc-500 leading-none mt-1">10s Rolling Buffer</p>
+                      </div>
+                  </div>
+                  {hasAudio && (
+                      <span className="text-[8px] bg-green-500/10 text-green-400 px-1.5 py-0.5 rounded shadow-[0_0_5px_rgba(34,197,94,0.1)] border border-green-500/20 font-mono tracking-widest uppercase">
+                          BUFFER LOADED
+                      </span>
+                  )}
+              </div>
 
-            <div className="flex flex-col items-center space-y-4 w-full max-w-md mx-auto">
-                <div className="w-full glass-panel flex flex-col items-center justify-center p-4 text-center border-dashed border-zinc-700/50">
-                    <div className="flex items-center gap-3 mb-2 justify-center">
-                        <Camera className="w-4 h-4 text-zinc-500" />
-                        <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-widest">Handshake Monitor (Webcam)</p>
-                    </div>
-                    <div className="w-full h-48 bg-black rounded-xl overflow-hidden relative border border-[#00CCFF]/20 mx-auto group">
-                        <video ref={videoRef} playsInline autoPlay muted className="w-full h-full object-cover transition-opacity duration-500 opacity-80 group-hover:opacity-100" />
-                        
-                        {/* Scanning Reticle overlay */}
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-50">
-                           <div className="w-32 h-32 border-2 border-[#00CCFF]/30 rounded-lg animate-pulse relative overflow-hidden">
-                              <div className="scanline absolute top-0 left-0" />
-                           </div>
-                           <div className="absolute top-2 right-2 bg-black/80 px-2 py-1 rounded text-[8px] font-mono text-[#00CCFF]">
-                              LIVE_FEED_SCANNING...
-                           </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+              <div className="flex-1 bg-black/40 shadow-inner rounded overflow-hidden border border-white/5 p-1 mx-2 mb-2 h-full min-h-[80px] relative">
+                  <WaveformVisualizer 
+                      audioEngine={audioEngine} 
+                      isRecording={isRecording}
+                      onRangeChange={setRange}
+                  />
+                  {!hasAudio && !isRecording && (
+                      <div className="absolute inset-0 flex items-center justify-center text-[10px] uppercase font-mono tracking-widest text-[#00CCFF]/50 pointer-events-none">
+                          No Data In Buffer
+                      </div>
+                  )}
+              </div>
           </div>
-        )}
+      </DraggableWindow>
 
-        {step === 'sync' && (
-           <div className="text-center space-y-8 animate-in zoom-in duration-500 w-full flex flex-col items-center">
-                <div className="w-full h-64 bg-black/50 rounded-2xl border border-white/5 relative overflow-hidden">
-                    <Scene3D telemetryRef={telemetryRef} />
-                    <div className="absolute top-4 left-4 flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-[#00CCFF] animate-pulse" />
-                        <span className="text-[10px] font-mono text-secondary uppercase tracking-widest">6DOF Telemetry Active</span>
-                    </div>
-                </div>
+      {/* 3. Deployment Tools */}
+      <DraggableWindow 
+          title="Deployment Ops" 
+          icon={<Save className="w-full h-full" />} 
+          initialX={355} initialY={305} 
+          initialWidth={500} initialHeight={235}
+          zIndex={zIndices.tools} 
+          onFocus={() => bringToFront('tools')}
+      >
+          <div className="flex flex-col justify-center h-full relative p-2">
+              {isBeaming && (
+                  <div className="absolute inset-0 bg-black/80 z-50 flex flex-col items-center justify-center rounded backdrop-blur-sm border border-[#00CCFF]/20 m-2">
+                      <div className="w-1/2 h-0.5 bg-white/5 rounded overflow-hidden mb-2">
+                          <div 
+                              className="h-full bg-[#00CCFF] transition-all duration-300 shadow-[0_0_10px_#00CCFF]" 
+                              style={{ width: `${transferProgress * 100}%` }}
+                          />
+                      </div>
+                      <p className="text-[8px] text-[#00CCFF] font-mono tracking-widest animate-pulse">BEAMING...</p>
+                  </div>
+              )}
 
-                <div className="space-y-4">
-                    <h2 className="text-2xl font-bold">Device Synced</h2>
-                    <div className="flex gap-4 font-mono text-[10px] text-[#00CCFF] justify-center bg-[#00CCFF]/10 px-4 py-2 rounded-lg">
-                        <span>X: {orientation?.x.toFixed(3) ?? '0.000'}</span>
-                        <span>Y: {orientation?.y.toFixed(3) ?? '0.000'}</span>
-                        <span>Z: {orientation?.z.toFixed(3) ?? '0.000'}</span>
-                        <span>W: {orientation?.w.toFixed(3) ?? '0.000'}</span>
-                    </div>
-                </div>
-                
-                <div className="bg-black/40 p-6 rounded-xl border border-white/5 space-y-6 text-left w-full max-w-sm">
-                    <div className="space-y-3">
-                        <label className="text-[10px] uppercase font-mono text-zinc-500 tracking-widest">Active System Binding</label>
-                        <div className="flex flex-wrap gap-2">
-                            {availableSlots.length > 0 ? availableSlots.map(s => (
-                                <button 
-                                    key={s}
-                                    onClick={() => setTargetSlot(s)}
-                                    className={`px-3 py-1 text-[10px] rounded-full border transition-all ${targetSlot === s ? 'bg-[#00CCFF] border-[#00CCFF] text-black' : 'border-zinc-800 text-zinc-500 hover:border-zinc-600'}`}
-                                >
-                                    {s}
-                                </button>
-                            )) : <span className="text-xs text-zinc-600 italic">Finding slots...</span>}
-                        </div>
-                    </div>
-                    
-                    <div className="h-[1px] bg-white/5 w-full" />
+              <div className={`transition-opacity duration-300 h-full ${(!isConnected || !hasAudio) ? 'opacity-30 pointer-events-none blur-[1px]' : 'opacity-100'}`}>
+                  <div className="grid grid-cols-2 gap-1.5 h-full">
+                      <div className="space-y-1.5">
+                          <label className="text-[9px] text-[#00CCFF] uppercase tracking-widest font-mono shadow-sm">Target Slot</label>
+                          <div className="relative">
+                              <select 
+                                  value={targetSlot}
+                                  onChange={(e) => setTargetSlot(e.target.value)}
+                                  className="w-full bg-black/80 text-[#00CCFF] shadow-inner border border-white/10 rounded py-1 px-2 text-[10px] appearance-none focus:outline-none focus:border-[#00CCFF] selection:bg-[#00CCFF]/40 transition-all font-mono"
+                              >
+                                  {availableSlots.length === 0 && <option>Waiting...</option>}
+                                  {availableSlots.map(s => <option key={s} value={s}>{s}</option>)}
+                              </select>
+                              <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
+                                  <Layers className="w-3 h-3 text-zinc-500" />
+                              </div>
+                          </div>
+                          
+                          <button 
+                              onClick={handlePreview}
+                              className="w-full py-1 bg-black/40 border border-white/10 hover:bg-white/5 hover:border-white/20 rounded flex items-center justify-center gap-1 text-[9px] font-mono uppercase tracking-wider transition-all"
+                          >
+                              <PlayCircle className="w-3 h-3 text-zinc-400" />
+                              Preview on Device
+                          </button>
+                      </div>
 
-                    <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium">Remote Audio Testing</span>
-                        <button 
-                            onClick={triggerTestSound}
-                            className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-xs rounded transition-colors"
-                        >
-                            Play Beep
-                        </button>
-                    </div>
-                </div>
+                      <div className="bg-black/40 rounded p-2 border border-[#00CCFF]/10 shadow-inner flex flex-col justify-between">
+                          <div className="mb-2">
+                              <p className="text-[8px] font-mono text-zinc-500 mb-1 uppercase tracking-widest leading-none">Commit Sequence</p>
+                              {deployResult === 'success' && <p className="text-[9px] font-mono text-green-400 bg-green-500/10 px-1 py-0.5 rounded inline-block mt-0.5">SUCCESS</p>}
+                              {deployResult === 'failed' && <p className="text-[9px] font-mono text-red-400 bg-red-500/10 px-1 py-0.5 rounded inline-block mt-0.5">FAILED</p>}
+                          </div>
+                          <div className="space-y-1.5">
+                              <button 
+                                  onClick={handleFinalize}
+                                  disabled={!targetSlot}
+                                  className="w-full py-2 bg-black/60 hover:bg-[#00CCFF]/20 border border-[#00CCFF]/50 text-[#00CCFF] rounded flex items-center justify-center gap-1 text-[10px] font-bold font-mono tracking-widest transition-all"
+                              >
+                                  <Send className="w-3 h-3" />
+                                  DEPLOY
+                              </button>
+                              
+                              <button 
+                                  onClick={triggerTestSound}
+                                  className="w-full flex justify-center items-center gap-1 text-[9px] font-mono uppercase tracking-widest text-[#00CCFF]/60 hover:text-[#00CCFF] transition-colors"
+                              >
+                                  <CheckCircle className="w-2 h-2" />
+                                  Test Installed
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+              </div>
 
-                <button onClick={handleFinalize} className="electric-button w-full py-4">
-                    Beam & Deploy to {targetSlot}
-                </button>
-           </div>
-        )}
+              {(!isConnected || !hasAudio) && (
+                  <div className="absolute inset-0 z-40 flex items-center justify-center">
+                      <p className="text-[9px] uppercase tracking-widest text-[#00CCFF] font-mono bg-black/60 px-3 py-1 border border-[#00CCFF]/20 rounded backdrop-blur-sm shadow-[0_0_10px_rgba(0,0,0,0.5)]">
+                          Requires Link & Buffer
+                      </p>
+                  </div>
+              )}
+          </div>
+      </DraggableWindow>
 
-        {step === 'beaming' && (
-           <div className="text-center space-y-12 animate-in fade-in duration-500 w-full flex flex-col items-center justify-center h-[300px]">
-                <div className="relative">
-                    <div className="absolute inset-0 bg-[#00CCFF]/20 blur-2xl animate-pulse rounded-full" />
-                    <Zap className="w-16 h-16 text-[#00CCFF] relative" />
-                </div>
-                <div className="space-y-6 w-full max-w-sm">
-                    <div className="flex flex-col items-center gap-2">
-                        <h2 className="text-2xl font-bold">Beaming To Agent</h2>
-                        <p className="text-xs text-secondary font-mono">ENCRYPTED BINARY FLOW: {Math.round(transferProgress * 100)}%</p>
-                    </div>
+      {/* 4. Telemetry Window */}
+      <DraggableWindow 
+          title="Telemetry Monitor" 
+          icon={<Activity className="w-full h-full" />} 
+          initialX={860} initialY={60} 
+          initialWidth={320} initialHeight={480}
+          zIndex={zIndices.telemetry} 
+          onFocus={() => bringToFront('telemetry')}
+      >
+          <div className="flex flex-col h-full bg-black/60 shadow-inner rounded border border-white/5 overflow-hidden m-2">
+              <div className="flex-1 relative">
+                  <Scene3D telemetryRef={telemetryRef} />
+                  <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                      <div className={`w-1 h-1 rounded ${isConnected ? 'bg-[#00CCFF] animate-pulse shadow-[0_0_5px_#00ccff]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
+                      <span className="text-[8px] font-mono text-zinc-400 shadow-sm uppercase tracking-widest">
+                          {isConnected ? '6DOF Streaming' : 'Offline'}
+                      </span>
+                  </div>
+              </div>
+              
+              <div className="h-28 bg-black p-2 flex flex-col justify-center border-t border-white/5 shadow-inner">
+                  <div className="grid grid-cols-2 gap-x-1.5 gap-y-1 font-mono text-[8px] text-[#00CCFF] opacity-90 overflow-y-auto">
+                      <div className="bg-[#00CCFF]/5 px-1 py-0.5 rounded flex justify-between"><span className="text-zinc-500 uppercase">Rot X</span> <span>{orientation?.x.toFixed(3) ?? '0.000'}</span></div>
+                      <div className="bg-[#00CCFF]/5 px-1 py-0.5 rounded flex justify-between"><span className="text-zinc-500 uppercase">Rot Y</span> <span>{orientation?.y.toFixed(3) ?? '0.000'}</span></div>
+                      <div className="bg-[#00CCFF]/5 px-1 py-0.5 rounded flex justify-between"><span className="text-zinc-500 uppercase">Rot Z</span> <span>{orientation?.z.toFixed(3) ?? '0.000'}</span></div>
+                      <div className="bg-[#00CCFF]/5 px-1 py-0.5 rounded flex justify-between"><span className="text-zinc-500 uppercase">Rot W</span> <span>{orientation?.w.toFixed(3) ?? '0.000'}</span></div>
+                      <div className="bg-white/5 px-1 py-0.5 rounded flex justify-between border border-white/5 mt-0.5"><span className="text-zinc-500 uppercase">Pos X</span> <span>{orientation?.px?.toFixed(2) ?? '0.00'}m</span></div>
+                      <div className="bg-white/5 px-1 py-0.5 rounded flex justify-between border border-white/5 mt-0.5"><span className="text-zinc-500 uppercase">Pos Y</span> <span>{orientation?.py?.toFixed(2) ?? '0.00'}m</span></div>
+                      <div className="bg-white/5 px-1 py-0.5 rounded flex justify-between border border-white/5 col-span-2"><span className="text-zinc-500 uppercase">Pos Z</span> <span>{orientation?.pz?.toFixed(2) ?? '0.00'}m</span></div>
+                  </div>
+              </div>
+          </div>
+      </DraggableWindow>
 
-                    <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
-                        <div 
-                            className="h-full bg-[#00CCFF] transition-all duration-300 shadow-[0_0_10px_#00CCFF]" 
-                            style={{ width: `${transferProgress * 100}%` }}
-                        />
-                    </div>
-                </div>
-           </div>
-        )}
-
-        {step === 'success' && (
-            <div className="text-center space-y-8 animate-in slide-in-from-bottom duration-700">
-                <div className="p-6 bg-green-500/10 rounded-full inline-block">
-                    <CheckCircle className="w-16 h-16 text-green-500" />
-                </div>
-                <div className="space-y-4">
-                    <h2 className="text-3xl font-bold">Transmission Complete</h2>
-                    <p className="text-secondary pb-4">Your audio has been deployed as the system {targetSlot} on your Android device.</p>
-                    
-                    <button 
-                        onClick={triggerTestSound}
-                        className="flex items-center gap-2 mx-auto px-6 py-2 bg-white/5 border border-white/10 rounded-full hover:bg-white/10 transition-all text-xs font-mono uppercase tracking-widest"
-                    >
-                        <Zap className="w-4 h-4 text-[#00CCFF]" />
-                        Test Sound on Device
-                    </button>
-                </div>
-                <button onClick={() => setStep('welcome')} className="text-sm text-zinc-500 hover:text-[#00CCFF] transition-colors underline underline-offset-4">
-                    Start New Capture
-                </button>
-            </div>
-        )}
-
-        {/* Footer Info (Now part of main flow to avoid overlap) */}
-        <footer className="mt-12 flex gap-8 opacity-40 hover:opacity-100 transition-opacity">
-           <div className="flex items-center gap-2 text-[9px] uppercase font-mono text-zinc-500 tracking-tighter">
-              <div className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-              Signal: DTLS-SRTP Encrypted
-           </div>
-           <div className="flex items-center gap-2 text-[9px] uppercase font-mono text-zinc-500 tracking-tighter">
-              <Zap className="w-3 h-3" />
-              Latency: ~12ms P2P
-           </div>
-        </footer>
-      </main>
-
-      {/* Background Decorative Element */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-[#00CCFF]/5 rounded-full blur-[120px] pointer-events-none -z-10" />
     </div>
   )
 }
+
+export default App

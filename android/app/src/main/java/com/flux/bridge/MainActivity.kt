@@ -65,36 +65,46 @@ class MainActivity : ComponentActivity() {
             var deployStatus by remember { mutableStateOf<String?>(null) }
             var bgStreaming by remember { mutableStateOf(false) }
             
-            // Initialize managers once
-            remember {
-                rtcManager = WebRTCManager(this, object : WebRTCManager.WebRTCListener {
+            DisposableEffect(Unit) {
+                rtcManager = WebRTCManager(this@MainActivity, object : WebRTCManager.WebRTCListener {
                     override fun onSignalGenerated(signal: String) {
-                        Log.d("HAZE_DEBUG", "Answer Signal Generated")
-                        answerSignal = signal
-                        currentStep = "answer"
+                        this@MainActivity.runOnUiThread {
+                            Log.d("HAZE_DEBUG", "Answer Signal Generated")
+                            answerSignal = signal
+                            currentStep = "answer"
+                        }
                     }
 
                     override fun onConnected() {
-                        Log.d("HAZE_DEBUG", "P2P CONNECTED")
-                        currentStep = "active"
-                        sensorBridge.start()
+                        this@MainActivity.runOnUiThread {
+                            Log.d("HAZE_DEBUG", "P2P CONNECTED")
+                            currentStep = "active"
+                            sensorBridge.start()
+                        }
                     }
 
                     override fun onDataReceived(data: String) {
-                        Log.d("HAZE_DEBUG", "WebRTC Data: $data")
-                        if (data == "DEPLOY_SUCCESS") {
-                            deployStatus = "Success"
-                        } else if (data == "DEPLOY_FAILED") {
-                            deployStatus = "Failed"
+                        this@MainActivity.runOnUiThread {
+                            Log.d("HAZE_DEBUG", "WebRTC Data: $data")
+                            if (data == "DEPLOY_SUCCESS") {
+                                deployStatus = "Success"
+                            } else if (data == "DEPLOY_FAILED") {
+                                deployStatus = "Failed"
+                            }
                         }
                     }
                     override fun onSensorStreamActive(active: Boolean) {}
                 })
 
-                sensorBridge = SensorBridge(this) { json ->
+                sensorBridge = SensorBridge(this@MainActivity) { json ->
                     rtcManager.sendSensorData(json)
                 }
-                true
+
+                onDispose {
+                    Log.d("HAZE_DEBUG", "Disposing of Android Signal Managers")
+                    sensorBridge.stop()
+                    rtcManager.close()
+                }
             }
 
             HazeBridgeTheme {
@@ -124,7 +134,7 @@ class MainActivity : ComponentActivity() {
                             Box(Modifier.fillMaxSize()) {
                                 QRScannerView { uri ->
                                     Log.d("HAZE_DEBUG", "QR Scanned: $uri")
-                                    val base64 = uri.substring(7)
+                                    val base64 = uri.substring(7).trim()
                                     rtcManager.handleOffer(base64)
                                     currentStep = "connecting"
                                 }
