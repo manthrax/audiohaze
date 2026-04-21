@@ -26,7 +26,7 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
     }
 
     init {
-        Log.d("FLUX_DEBUG", "WebRTCManager Init: Initializing Factory")
+        Log.d("HAZE_DEBUG", "WebRTCManager Init: Initializing Factory")
         PeerConnectionFactory.initialize(
             PeerConnectionFactory.InitializationOptions.builder(context)
                 .createInitializationOptions()
@@ -36,11 +36,11 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
         peerConnectionFactory = PeerConnectionFactory.builder()
             .setOptions(options)
             .createPeerConnectionFactory()
-        Log.d("FLUX_DEBUG", "WebRTCManager Init: Factory Created")
+        Log.d("HAZE_DEBUG", "WebRTCManager Init: Factory Created")
     }
 
     fun handleOffer(base64Offer: String) {
-        Log.d("FLUX_DEBUG", "Handling Offer")
+        Log.d("HAZE_DEBUG", "Handling Offer")
         val iceServers = emptyList<PeerConnection.IceServer>()
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
@@ -139,6 +139,7 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
     private var tempFileBytes: java.io.ByteArrayOutputStream? = null
     private var expectedSize = 0L
     private var targetSlot = "NOTIFICATION" // Default
+    private var isPreviewMode = false
 
     private fun sendDiscoveryInfo() {
         val discovery = "{\"type\":\"discovery\",\"slots\":[\"RINGTONE\",\"NOTIFICATION\",\"ALARM\"]}"
@@ -164,7 +165,12 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
                     tempFileBytes?.write(data)
                     
                     if (tempFileBytes?.size()?.toLong() == expectedSize) {
-                        saveAndSetRingtone(tempFileBytes!!.toByteArray())
+                        val fileData = tempFileBytes!!.toByteArray()
+                        if (isPreviewMode) {
+                            playDataPreview(fileData)
+                        } else {
+                            saveAndSetRingtone(fileData)
+                        }
                         tempFileBytes = null
                     }
                 } else {
@@ -176,6 +182,7 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
                         // Very basic JSON parsing
                         expectedSize = msg.substringAfter("\"size\":").substringBefore(",").toLong()
                         targetSlot = msg.substringAfter("\"slot\":\"").substringBefore("\"")
+                        isPreviewMode = msg.contains("\"is_preview\":true")
                         tempFileBytes = java.io.ByteArrayOutputStream()
                     } else if (msg.contains("\"cmd\":\"PLAY_TEST_SOUND\"")) {
                         playCurrentTestAudio()
@@ -189,7 +196,7 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
 
     private fun saveAndSetRingtone(data: ByteArray) {
         try {
-            val file = java.io.File(context.getExternalFilesDir(null), "flux_notification.ogg")
+            val file = java.io.File(context.getExternalFilesDir(null), "haze_notification.wav")
             file.writeBytes(data)
             
             // Deploy via Utils
@@ -205,8 +212,18 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
         }
     }
 
+    private fun playDataPreview(data: ByteArray) {
+        try {
+            val file = java.io.File(context.getExternalFilesDir(null), "haze_preview.wav")
+            file.writeBytes(data)
+            RingtoneUtils.playPreview(context, file)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private fun playCurrentTestAudio() {
-        val file = java.io.File(context.getExternalFilesDir(null), "flux_notification.ogg")
+        val file = java.io.File(context.getExternalFilesDir(null), "haze_notification.wav")
         if (file.exists()) {
             RingtoneUtils.playPreview(context, file)
         } else {

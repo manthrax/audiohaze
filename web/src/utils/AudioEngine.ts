@@ -4,8 +4,12 @@ export class AudioEngine {
   private source: MediaStreamAudioSourceNode | null = null;
   public latestData: Float32Array = new Float32Array(1024);
   
-  private recorder: MediaRecorder | null = null;
-  private chunks: Blob[] = [];
+  // 10s circular buffer @ 44.1kHz
+  private readonly bufferSize = 44100 * 10;
+  private circularBuffer = new Float32Array(this.bufferSize);
+  private writeIdx = 0;
+  private gainNode: GainNode | null = null;
+  public isRecording = false;
 
   async startCapture(): Promise<MediaStream> {
     this.stream = await navigator.mediaDevices.getDisplayMedia({
@@ -19,29 +23,70 @@ export class AudioEngine {
       throw new Error("No audio track found in display media. Did you check 'Share Audio'?");
     }
 
-    // Initialize recorder on the audio track
-    const audioStream = new MediaStream([audioTracks[0]]);
-    this.recorder = new MediaRecorder(audioStream);
-    this.chunks = [];
-    this.recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) this.chunks.push(e.data);
-    };
-    this.recorder.start();
-
+    this.isRecording = true;
     return this.stream;
   }
 
-  async getCapturedBlob(): Promise<Blob> {
-    return new Promise((resolve) => {
-      if (!this.recorder || this.recorder.state === 'inactive') {
-          resolve(new Blob(this.chunks, { type: 'audio/webm' }));
-          return;
-      }
-      this.recorder.onstop = () => {
-          resolve(new Blob(this.chunks, { type: 'audio/webm' }));
-      };
-      this.recorder.stop();
-    });
+  setGain(value: number) {
+    if (this.gainNode) {
+        this.gainNode.gain.setTargetAtTime(value, 0, 0.05);
+    }
+  }
+
+  getBufferData() {
+    // Return a copy of the circular buffer sorted relative to the writeIdx
+    const output = new Float32Array(this.bufferSize);
+    for (let i = 0; i < this.bufferSize; i++) {
+        output[i] = this.circularBuffer[(this.writeIdx + i) % this.bufferSize];
+    }
+    return output;
+  }
+
+  async getTrimmedBlob(startPct: number, endPct: number): Promise<Blob> {
+    const fullBuffer = this.getBufferData();
+    const startIdx = Math.floor(startPct * this.bufferSize);
+    const endIdx = Math.floor(endPct * this.bufferSize);
+    const length = endIdx - startIdx;
+    
+    if (length <= 0) throw new Error("Invalid selection range");
+
+    const trimmed = fullBuffer.slice(startIdx, endIdx);
+    
+    // Convert to mono WAV for Android
+    return this.encodeWav(trimmed);
+  }
+
+  private encodeWav(samples: Float32Array): Blob {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+
+    const writeString = (offset: number, string: string) => {
+        for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, 44100, true);
+    view.setUint32(28, 44100 * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
   }
 
   async setupAnalysis(stream: MediaStream) {
@@ -55,11 +100,26 @@ export class AudioEngine {
     }
     
     this.source = this.audioContext.createMediaStreamSource(stream);
+    this.gainNode = this.audioContext.createGain();
     
-    // We use a simple script processor or analyzer for visualization
     const analyser = this.audioContext.createAnalyser();
     analyser.fftSize = 2048;
-    this.source.connect(analyser);
+    
+    this.source.connect(this.gainNode);
+    this.gainNode.connect(analyser);
+
+    const scriptProcessor = this.audioContext.createScriptProcessor(4096, 1, 1);
+    scriptProcessor.onaudioprocess = (e) => {
+        if (!this.isRecording) return;
+        const inputData = e.inputBuffer.getChannelData(0);
+        for (let i = 0; i < inputData.length; i++) {
+            this.circularBuffer[this.writeIdx] = inputData[i];
+            this.writeIdx = (this.writeIdx + 1) % this.bufferSize;
+        }
+    };
+    
+    this.source.connect(scriptProcessor);
+    scriptProcessor.connect(this.audioContext.destination);
 
     const tick = () => {
       if (!this.audioContext) return;
@@ -70,10 +130,12 @@ export class AudioEngine {
   }
 
   stop() {
+    this.isRecording = false;
     this.stream?.getTracks().forEach(t => t.stop());
     this.audioContext?.close();
     this.stream = null;
     this.audioContext = null;
+    this.gainNode = null;
   }
 
   /**

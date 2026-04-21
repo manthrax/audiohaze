@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
 import jsQR from "jsqr"
-import { Mic, Zap, Smartphone, CheckCircle, Shield, Camera } from 'lucide-react'
+import { Mic, Zap, Smartphone, CheckCircle, Shield, Camera, Play, Pause } from 'lucide-react'
 import { QRCodeCanvas } from 'qrcode.react'
 import WaveformVisualizer from './components/WaveformVisualizer'
 import Scene3D from './components/Scene3D'
 import { audioEngine } from './utils/AudioEngine'
-import { encodeSignal, decodeSignal, toFluxUri } from './utils/signaling'
+import { encodeSignal, decodeSignal, toHazeUri } from './utils/signaling'
 import { transcoder } from './utils/Transcoder'
 import { FileTransfer } from './utils/FileTransfer'
 import Peer from 'simple-peer'
@@ -16,7 +16,7 @@ interface Orientation { w: number, x: number, y: number, z: number }
 
 declare global {
   interface Window {
-    lastFluxUpdate?: number;
+    lastHazeUpdate?: number;
   }
 }
 
@@ -28,8 +28,23 @@ export default function App() {
   const [transferProgress, setTransferProgress] = useState(0)
   const [availableSlots, setAvailableSlots] = useState<string[]>([])
   const [targetSlot, setTargetSlot] = useState<string>('NOTIFICATION')
+  const [isPaused, setIsPaused] = useState(false);
+  const [gain, setGain] = useState(1.0);
+  const [range, setRange] = useState<[number, number]>([0.2, 0.8]);
   
   const videoRef = useRef<HTMLVideoElement>(null)
+  const telemetryRef = useRef<number[] | null>(null)
+
+  const togglePause = () => {
+    const newState = !isPaused;
+    setIsPaused(newState);
+    audioEngine.isRecording = !newState;
+  };
+
+  const updateGain = (val: number) => {
+    setGain(val);
+    audioEngine.setGain(val);
+  };
 
   const startFlow = async () => {
     console.log("startFlow triggered");
@@ -62,7 +77,7 @@ export default function App() {
     p.on('signal', data => {
       // Signal contains the SDP
       const encoded = encodeSignal(data)
-      setOfferQr(toFluxUri(encoded))
+      setOfferQr(toHazeUri(encoded))
     })
 
     p.on('connect', () => {
@@ -75,13 +90,13 @@ export default function App() {
           const raw = new TextDecoder().decode(data)
           const json = JSON.parse(raw)
           if (json.q) {
-              // Direct sub-millisecond bypass to WebGL
-              window.dispatchEvent(new CustomEvent('flux-telemetry', { detail: json.q }));
+              // Direct memory write for WebGL loop
+              telemetryRef.current = json.q;
               
               // Throttle React state visually to ~10hz
               const now = Date.now();
-              if (!window.lastFluxUpdate || now - window.lastFluxUpdate > 100) {
-                  window.lastFluxUpdate = now;
+              if (!window.lastHazeUpdate || now - window.lastHazeUpdate > 100) {
+                  window.lastHazeUpdate = now;
                   setOrientation({
                       w: json.q[0],
                       x: json.q[1],
@@ -101,24 +116,33 @@ export default function App() {
   }
 
   const handleFinalize = async () => {
-    if (!peer) return;
-    setStep('beaming')
-    
+    if (!peer || !targetSlot) return;
+    setStep('beaming');
+    setTransferProgress(0);
+
     try {
-        const webmBlob = await audioEngine.getCapturedBlob()
-        audioEngine.stop()
+        const audioBlob = await audioEngine.getTrimmedBlob(range[0], range[1]);
+        const transfer = new FileTransfer(peer, (progress) => {
+            setTransferProgress(progress);
+        });
 
-        const opusData = await transcoder.toOpus(webmBlob)
-        
-        await FileTransfer.send(peer, opusData, (p) => {
-            setTransferProgress(p)
-        }, { slot: targetSlot })
-
-        setStep('success')
+        await transfer.sendFile(audioBlob, 'haze_notification.wav', targetSlot, false);
+        setStep('success');
     } catch (e) {
-        console.error("Finalize Failed", e)
-        alert("Failed to transcode or send audio. Ensure high-performance mode is enabled.")
-        setStep('sync')
+        console.error("Transfer failed", e);
+        setStep('sync');
+    }
+  }
+
+  const handlePreview = async () => {
+    if (!peer) return;
+    // We don't change step for preview to keep the UI interactive
+    try {
+        const audioBlob = await audioEngine.getTrimmedBlob(range[0], range[1]);
+        const transfer = new FileTransfer(peer, (p) => setTransferProgress(p));
+        await transfer.sendFile(audioBlob, 'haze_preview.wav', 'PREVIEW', true);
+    } catch (e) {
+        console.error("Preview failed", e);
     }
   }
 
@@ -172,7 +196,7 @@ export default function App() {
                 inversionAttempts: "attemptBoth",
             });
 
-            if (code && code.data.startsWith("flux://") && !answered) {
+            if (code && code.data.toLowerCase().startsWith("haze://") && !answered) {
                 const encoded = code.data.substring(7);
                 answered = true;
                 simulateAnswer(encoded);
@@ -219,7 +243,7 @@ export default function App() {
         <div className="p-2 border border-[#00CCFF] rounded-lg shadow-[0_0_15px_rgba(0,204,255,0.3)]">
           <Zap className="w-6 h-6 text-[#00CCFF]" />
         </div>
-        <h1 className="text-2xl font-bold tracking-tight">FluxBridge <span className="text-[#00CCFF] font-light">Framework</span></h1>
+        <h1 className="text-2xl font-bold tracking-tight">HazeBridge <span className="text-[#00CCFF] font-light">Framework</span></h1>
       </header>
 
       {/* Main Container */}
@@ -228,7 +252,7 @@ export default function App() {
         {step === 'welcome' && (
           <div className="text-center space-y-8 animate-in fade-in duration-700">
             <div className="space-y-4">
-              <h2 className="text-4xl font-bold">FluxBridge <span className="neon-text">Client</span></h2>
+              <h2 className="text-4xl font-bold">HazeBridge <span className="neon-text">Client</span></h2>
               <p className="text-secondary max-w-xl mx-auto">
                 Connect your Android device as a remote sensor and I/O platform via local P2P WebRTC.
               </p>
@@ -260,23 +284,65 @@ export default function App() {
         )}
 
         {step === 'record' && (
-          <div className="w-full h-full flex flex-col items-center space-y-8 animate-in fade-in">
-             <div className="w-full min-h-[300px] bg-black/40 rounded-2xl border border-white/5 relative z-10 overflow-hidden">
-                <WaveformVisualizer />
+          <div className="w-full h-full flex flex-col items-center space-y-6 animate-in fade-in">
+             <div className="w-full min-h-[300px] bg-black/40 rounded-2xl border border-white/5 relative z-10 overflow-hidden group">
+                <WaveformVisualizer isStatic={isPaused} rangeStart={range[0]} rangeEnd={range[1]} />
+                
                 <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none">
-                    <div className="recording-indicator" />
-                    <span className="text-xs font-mono text-secondary uppercase tracking-widest">Master Loopback</span>
+                    <div className={isPaused ? "w-2 h-2 rounded-full bg-zinc-600" : "recording-indicator"} />
+                    <span className="text-xs font-mono text-secondary uppercase tracking-widest">
+                        {isPaused ? "Buffer Paused (10s)" : "Direct Loopback"}
+                    </span>
+                </div>
+
+                {isPaused && (
+                    <div className="absolute inset-x-0 bottom-0 h-12 bg-black/60 backdrop-blur-md flex items-center px-8 border-t border-white/10">
+                        <input 
+                            type="range" min="0" max="1" step="0.01" 
+                            value={range[0]} onChange={e => setRange([parseFloat(e.target.value), range[1]])}
+                            className="flex-1 accent-[#00CCFF] opacity-50 hover:opacity-100 transition-opacity"
+                        />
+                        <div className="w-px h-4 bg-white/20 mx-4" />
+                        <input 
+                            type="range" min="0" max="1" step="0.01" 
+                            value={range[1]} onChange={e => setRange([range[0], parseFloat(e.target.value)])}
+                            className="flex-1 accent-[#00CCFF] opacity-50 hover:opacity-100 transition-opacity"
+                        />
+                    </div>
+                )}
+             </div>
+
+             <div className="flex items-center gap-8 w-full max-w-md bg-zinc-900/50 p-4 rounded-xl border border-white/5">
+                <button onClick={togglePause} className="p-3 bg-[#00CCFF]/10 text-[#00CCFF] rounded-full hover:bg-[#00CCFF]/20 transition-colors">
+                    {isPaused ? <Play className="w-6 h-6" /> : <Pause className="w-6 h-6" />}
+                </button>
+                
+                <div className="flex-1 space-y-2">
+                    <div className="flex justify-between text-[10px] font-mono text-secondary uppercase">
+                        <span>Output Gain</span>
+                        <span>{Math.round(gain * 100)}%</span>
+                    </div>
+                    <input 
+                        type="range" min="0" max="2" step="0.1" 
+                        value={gain} onChange={e => updateGain(parseFloat(e.target.value))}
+                        className="w-full accent-[#00CCFF]"
+                    />
                 </div>
              </div>
 
-             <div className="text-center space-y-4">
-                <h3 className="text-xl font-medium text-secondary">Audio Capture Established</h3>
-                <p className="text-sm text-zinc-500">Preview the waveform, then initialize the optical handshake.</p>
+             <div className="text-center space-y-2">
+                <h3 className="text-xl font-medium text-secondary">Capture Engine Active</h3>
+                <p className="text-sm text-zinc-500">Isolate your sample in the 10s buffer, then sync to agent.</p>
              </div>
 
-             <button onClick={prepareSync} className="electric-button">
-                Sync to Agent
-             </button>
+             <div className="flex gap-4">
+                <button onClick={handlePreview} className="px-6 py-3 bg-white/5 border border-white/10 rounded-full hover:bg-white/10 transition-all text-xs font-mono uppercase tracking-widest text-zinc-400">
+                    Preview on Device
+                </button>
+                <button onClick={prepareSync} className="electric-button">
+                    Finalize Sample
+                </button>
+             </div>
           </div>
         )}
 
@@ -305,7 +371,7 @@ export default function App() {
 
                <div className="max-w-sm space-y-3">
                  <p className="text-sm text-zinc-400 leading-relaxed px-4">
-                   Scan this QR code with the FluxBridge Agent. 
+                   Scan this QR code with the HazeBridge Agent. 
                  </p>
                  <div className="flex items-center justify-center gap-4 text-[10px] uppercase font-mono text-zinc-500">
                     <span className="flex items-center gap-1"><CheckCircle className="w-3 h-3 text-green-500" /> Host Only</span>
@@ -343,7 +409,7 @@ export default function App() {
         {step === 'sync' && (
            <div className="text-center space-y-8 animate-in zoom-in duration-500 w-full flex flex-col items-center">
                 <div className="w-full h-64 bg-black/50 rounded-2xl border border-white/5 relative overflow-hidden">
-                    <Scene3D orientation={orientation} />
+                    <Scene3D telemetryRef={telemetryRef} />
                     <div className="absolute top-4 left-4 flex items-center gap-2">
                         <div className="w-2 h-2 rounded-full bg-[#00CCFF] animate-pulse" />
                         <span className="text-[10px] font-mono text-secondary uppercase tracking-widest">6DOF Telemetry Active</span>
@@ -401,7 +467,6 @@ export default function App() {
                     <div className="absolute inset-0 bg-[#00CCFF]/20 blur-2xl animate-pulse rounded-full" />
                     <Zap className="w-16 h-16 text-[#00CCFF] relative" />
                 </div>
-                
                 <div className="space-y-6 w-full max-w-sm">
                     <div className="flex flex-col items-center gap-2">
                         <h2 className="text-2xl font-bold">Beaming To Agent</h2>

@@ -6,16 +6,29 @@ import Peer from 'simple-peer';
 export class FileTransfer {
   private static CHUNK_SIZE = 16384; // 16KB safe chunk size
 
-  static async send(peer: Peer.Instance, data: Uint8Array, onProgress: (p: number) => void, metadata: any = {}) {
+  private peer: Peer.Instance;
+  private onProgress: (p: number) => void;
+
+  constructor(peer: Peer.Instance, onProgress: (p: number) => void) {
+    this.peer = peer;
+    this.onProgress = onProgress;
+  }
+
+  async sendFile(blob: Blob, name: string = 'haze_sample.wav', slot: string = 'NOTIFICATION', isPreview: boolean = false) {
+    if (!this.peer || !this.peer.connected) throw new Error("Peer not connected");
+    
+    const arrayBuffer = await blob.arrayBuffer();
+    const data = new Uint8Array(arrayBuffer);
     const totalChunks = Math.ceil(data.length / FileTransfer.CHUNK_SIZE);
     
     // Send Metadata first
-    peer.send(JSON.stringify({
+    this.peer.send(JSON.stringify({
       type: 'file_meta',
       size: data.length,
       chunks: totalChunks,
-      name: 'notification.ogg',
-      ...metadata
+      name,
+      slot,
+      is_preview: isPreview
     }));
 
     // Small delay to ensure meta is processed
@@ -27,17 +40,13 @@ export class FileTransfer {
         const chunk = data.slice(start, end);
 
         // BACKPRESSURE: If the buffer is too full, wait before sending more
-        // modern browsers usually have a 64KB - 256KB limit per message, 
-        // but simple-peer manages the queue. We check the internal RTCDataChannel buffer.
-        // Accessing the internal channel from simple-peer
-        const internalChannel = (peer as any)._channel as RTCDataChannel;
-        
+        const internalChannel = (this.peer as any)._channel as RTCDataChannel;
         while (internalChannel && internalChannel.bufferedAmount > 64 * 1024) {
             await new Promise(r => setTimeout(r, 50));
         }
 
-        peer.send(chunk);
-        onProgress((i + 1) / totalChunks);
+        this.peer.send(chunk);
+        this.onProgress((i + 1) / totalChunks);
     }
   }
 }

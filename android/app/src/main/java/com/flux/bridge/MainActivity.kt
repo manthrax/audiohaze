@@ -12,6 +12,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -20,15 +22,37 @@ import androidx.compose.material.icons.filled.PhoneAndroid
 import android.provider.Settings
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var rtcManager: WebRTCManager
     private lateinit var sensorBridge: SensorBridge
+    private var keepBackground = false
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (!keepBackground) {
+            if (this::rtcManager.isInitialized) rtcManager.close()
+            if (this::sensorBridge.isInitialized) sensorBridge.stop()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.d("FLUX_DEBUG", "Starting Full FluxBridge Logic")
+        Log.d("HAZE_DEBUG", "Starting Full HazeBridge Logic")
+
+        // Crash Reporting Setup
+        val prefs = getSharedPreferences("haze_prefs", android.content.Context.MODE_PRIVATE)
+        val lastCrash = prefs.getString("last_crash", null)
+        prefs.edit().remove("last_crash").apply()
+
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, exception ->
+            val stackTrace = Log.getStackTraceString(exception)
+            prefs.edit().putString("last_crash", stackTrace).commit()
+            defaultHandler?.uncaughtException(thread, exception) ?: System.exit(1)
+        }
 
         // Request Permissions
         if (checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -36,27 +60,28 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            var currentStep by remember { mutableStateOf("permission") }
+            var currentStep by remember { mutableStateOf(if (lastCrash != null) "crash" else "permission") }
             var answerSignal by remember { mutableStateOf<String?>(null) }
             var deployStatus by remember { mutableStateOf<String?>(null) }
+            var bgStreaming by remember { mutableStateOf(false) }
             
             // Initialize managers once
             remember {
                 rtcManager = WebRTCManager(this, object : WebRTCManager.WebRTCListener {
                     override fun onSignalGenerated(signal: String) {
-                        Log.d("FLUX_DEBUG", "Answer Signal Generated")
+                        Log.d("HAZE_DEBUG", "Answer Signal Generated")
                         answerSignal = signal
                         currentStep = "answer"
                     }
 
                     override fun onConnected() {
-                        Log.d("FLUX_DEBUG", "P2P CONNECTED")
+                        Log.d("HAZE_DEBUG", "P2P CONNECTED")
                         currentStep = "active"
                         sensorBridge.start()
                     }
 
                     override fun onDataReceived(data: String) {
-                        Log.d("FLUX_DEBUG", "WebRTC Data: $data")
+                        Log.d("HAZE_DEBUG", "WebRTC Data: $data")
                         if (data == "DEPLOY_SUCCESS") {
                             deployStatus = "Success"
                         } else if (data == "DEPLOY_FAILED") {
@@ -72,12 +97,17 @@ class MainActivity : ComponentActivity() {
                 true
             }
 
-            FluxBridgeTheme {
+            HazeBridgeTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = Color(0xFF050505)
                 ) {
                     when(currentStep) {
+                        "crash" -> {
+                            CrashReportScreen(lastCrash!!) {
+                                currentStep = "permission"
+                            }
+                        }
                         "permission" -> {
                             PermissionScreen {
                                 if (Settings.System.canWrite(this@MainActivity)) {
@@ -91,11 +121,21 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         "scan" -> {
-                            QRScannerView { uri ->
-                                Log.d("FLUX_DEBUG", "QR Scanned: $uri")
-                                val base64 = uri.substringAfter("flux://")
-                                rtcManager.handleOffer(base64)
-                                currentStep = "connecting"
+                            Box(Modifier.fillMaxSize()) {
+                                QRScannerView { uri ->
+                                    Log.d("HAZE_DEBUG", "QR Scanned: $uri")
+                                    val base64 = uri.substring(7)
+                                    rtcManager.handleOffer(base64)
+                                    currentStep = "connecting"
+                                }
+                                
+                                Button(
+                                    onClick = { finishAffinity() },
+                                    modifier = Modifier.align(Alignment.BottomCenter).padding(32.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.5f))
+                                ) {
+                                    Text("QUIT APP", color = Color.White, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                                }
                             }
                         }
                         "connecting" -> {
@@ -105,13 +145,21 @@ class MainActivity : ComponentActivity() {
                             AnswerQRScreen(answerSignal ?: "INVALID") { currentStep = "scan" }
                         }
                         "active" -> {
-                            ActiveBridgeScreen(deployStatus) {
-                                rtcManager.close()
-                                sensorBridge.stop()
-                                deployStatus = null
-                                answerSignal = null
-                                currentStep = "scan"
-                            }
+                            ActiveBridgeScreen(
+                                deployStatus = deployStatus,
+                                bgStreaming = bgStreaming,
+                                onBgToggle = {
+                                    bgStreaming = it
+                                    keepBackground = it
+                                },
+                                onDisconnect = {
+                                    rtcManager.close()
+                                    sensorBridge.stop()
+                                    deployStatus = null
+                                    answerSignal = null
+                                    currentStep = "scan"
+                                }
+                            )
                         }
                     }
                 }
@@ -122,7 +170,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AnswerQRScreen(signal: String, onRestart: () -> Unit) {
-    val signalUri = "flux://$signal"
+    val signalUri = "haze://$signal"
     val qrBitmap = remember(signal) { generateQrBitmap(signalUri) }
 
     Column(
@@ -188,10 +236,11 @@ fun PermissionScreen(onCheck: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        val context = LocalContext.current
         Text("PERMISSIONS REQUIRED", color = Color(0xFF00CCFF), fontSize = 14.sp, fontFamily = FontFamily.Monospace)
         Spacer(Modifier.height(16.dp))
         Text(
-            "FluxBridge needs permission to modify system settings to assign ringtones.",
+            "HazeBridge needs permission to modify system settings to assign ringtones.",
             color = Color.Gray,
             fontSize = 12.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -202,6 +251,12 @@ fun PermissionScreen(onCheck: () -> Unit) {
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00CCFF))
         ) {
             Text("GRANT & CONTINUE", color = Color.Black)
+        }
+        
+        Spacer(Modifier.height(16.dp))
+        
+        TextButton(onClick = { (context as? android.app.Activity)?.finishAffinity() }) {
+            Text("QUIT APP", color = Color.Gray, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         }
     }
 }
@@ -223,7 +278,12 @@ fun ConnectingScreen(onRestart: () -> Unit) {
 }
 
 @Composable
-fun ActiveBridgeScreen(deployStatus: String?, onDisconnect: () -> Unit) {
+fun ActiveBridgeScreen(
+    deployStatus: String?, 
+    bgStreaming: Boolean,
+    onBgToggle: (Boolean) -> Unit,
+    onDisconnect: () -> Unit
+) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -263,6 +323,24 @@ fun ActiveBridgeScreen(deployStatus: String?, onDisconnect: () -> Unit) {
             )
         }
         
+        Spacer(Modifier.height(32.dp))
+        
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Keep Streaming in Background", color = Color.Gray, fontSize = 12.sp)
+            Spacer(Modifier.width(16.dp))
+            Switch(
+                checked = bgStreaming,
+                onCheckedChange = onBgToggle,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color(0xFF00CCFF),
+                    checkedTrackColor = Color(0xFF00CCFF).copy(alpha = 0.5f)
+                )
+            )
+        }
+        
         Spacer(Modifier.height(48.dp))
         
         androidx.compose.material3.Button(
@@ -278,7 +356,7 @@ fun ActiveBridgeScreen(deployStatus: String?, onDisconnect: () -> Unit) {
 }
 
 @Composable
-fun FluxBridgeTheme(content: @Composable () -> Unit) {
+fun HazeBridgeTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = Color(0xFF00CCFF),
@@ -286,4 +364,46 @@ fun FluxBridgeTheme(content: @Composable () -> Unit) {
         ),
         content = content
     )
+}
+
+@Composable
+fun CrashReportScreen(crashLog: String, onDismiss: () -> Unit) {
+    val scrollState = rememberScrollState()
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp).padding(top = 24.dp),
+        horizontalAlignment = Alignment.Start
+    ) {
+        Text("CRASH DETECTED", color = Color.Red, fontSize = 20.sp, fontFamily = FontFamily.Monospace)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "The agent terminated unexpectedly. Diagnostics:",
+            color = Color.Gray,
+            fontSize = 12.sp
+        )
+        Spacer(Modifier.height(16.dp))
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .background(Color(0xFF111111))
+                .padding(8.dp)
+        ) {
+            Text(
+                text = crashLog, 
+                color = Color.Red.copy(alpha = 0.8f), 
+                fontSize = 8.sp, 
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.verticalScroll(scrollState)
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = onDismiss,
+            colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        ) {
+            Text("ACKNOWLEDGE & RESTART", color = Color.White)
+        }
+        Spacer(Modifier.height(16.dp))
+    }
 }

@@ -41,15 +41,15 @@ export function decodeSignal(encoded: string): any {
 }
 
 /**
- * Generates the FluxSound URI
+ * Generates the HazeSound URI
  */
-export function toFluxUri(encoded: string): string {
-  return `flux://${encoded}`;
+export function toHazeUri(encoded: string): string {
+  return `haze://${encoded}`;
 }
 
 /**
- * Parses the FluxSound URI
+ * Parses the HazeSound URI
  */
-export function fromFluxUri(uri: string): string {
-  return uri.replace('flux://', '');
+export function fromHazeUri(uri: string): string {
+  return uri.replace('haze://', '');
 }

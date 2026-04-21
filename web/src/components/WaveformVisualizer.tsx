@@ -3,16 +3,24 @@ import * as THREE from 'three';
 import { audioEngine } from '../utils/AudioEngine';
 
 interface WaveformVisualizerProps {
-  // Direct integration with audioEngine
+  isStatic?: boolean;
+  rangeStart?: number;
+  rangeEnd?: number;
 }
 
-const WaveformVisualizer: React.FC<WaveformVisualizerProps> = () => {
+const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ 
+  isStatic = false, 
+  rangeStart = 0, 
+  rangeEnd = 1 
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const textureRef = useRef<THREE.DataTexture | null>(null);
   const materialRef = useRef<THREE.ShaderMaterial | null>(null);
+  
+  const staticBufferRef = useRef<Float32Array | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -47,7 +55,9 @@ const WaveformVisualizer: React.FC<WaveformVisualizerProps> = () => {
       uniforms: {
         tAudio: { value: texture },
         color: { value: new THREE.Color(0x00CCFF) },
-        time: { value: 0 }
+        time: { value: 0 },
+        selection: { value: new THREE.Vector2(0, 1) },
+        isStatic: { value: 0.0 }
       },
       vertexShader: `
         varying vec2 vUv;
@@ -60,6 +70,8 @@ const WaveformVisualizer: React.FC<WaveformVisualizerProps> = () => {
         uniform sampler2D tAudio;
         uniform vec3 color;
         uniform float time;
+        uniform vec2 selection;
+        uniform float isStatic;
         varying vec2 vUv;
 
         void main() {
@@ -70,11 +82,19 @@ const WaveformVisualizer: React.FC<WaveformVisualizerProps> = () => {
           float mask = dist < thickness ? 1.0 : 0.0;
           float glow = exp(-dist * 25.0) * 0.6;
           
-          vec3 finalColor = color * (mask + glow);
+          bool inSelection = vUv.x >= selection.x && vUv.x <= selection.y;
+          vec3 baseColor = inSelection ? color : color * 0.2;
+          
+          vec3 finalColor = baseColor * (mask + glow);
+          
+          if (!inSelection && isStatic > 0.5) {
+             finalColor *= 0.5;
+          }
+
           float flicker = 0.9 + 0.1 * sin(time * 5.0);
           finalColor *= flicker;
           
-          float edge = smoothstep(0.0, 0.1, vUv.x) * smoothstep(1.0, 0.9, vUv.x);
+          float edge = smoothstep(0.0, 0.05, vUv.x) * smoothstep(1.0, 0.95, vUv.x);
           gl_FragColor = vec4(finalColor * edge, 1.0);
         }
       `,
@@ -88,17 +108,29 @@ const WaveformVisualizer: React.FC<WaveformVisualizerProps> = () => {
     scene.add(plane);
 
     const animate = (t: number) => {
-      if (!rendererRef.current || !sceneRef.current || !cameraRef.current || !textureRef.current) return;
+      if (!rendererRef.current || !sceneRef.current || !cameraRef.current || !textureRef.current || !materialRef.current) return;
       
-      // Direct Data Copy (Bypassing React)
-      const latest = audioEngine.latestData;
+      const mat = materialRef.current;
       const texData = textureRef.current.image.data as Float32Array;
-      for (let i = 0; i < latest.length; i++) {
-        texData[i * 4] = latest[i];
-      }
-      textureRef.current.needsUpdate = true;
 
-      material.uniforms.time.value = t / 1000;
+      if (mat.uniforms.isStatic.value > 0.5) {
+          // Static Mode: Render full 10s buffer
+          const fullBuffer = audioEngine.getBufferData();
+          // Downsample for texture
+          for (let i = 0; i < size; i++) {
+              const idx = Math.floor((i / size) * fullBuffer.length);
+              texData[i * 4] = fullBuffer[idx];
+          }
+      } else {
+          // Live mode
+          const latest = audioEngine.latestData;
+          for (let i = 0; i < latest.length; i++) {
+              texData[i * 4] = latest[i];
+          }
+      }
+
+      textureRef.current.needsUpdate = true;
+      mat.uniforms.time.value = t / 1000;
       rendererRef.current.render(sceneRef.current, cameraRef.current);
       requestAnimationFrame(animate);
     };
@@ -121,6 +153,13 @@ const WaveformVisualizer: React.FC<WaveformVisualizerProps> = () => {
       containerRef.current?.removeChild(renderer.domElement);
     };
   }, []);
+
+  useEffect(() => {
+    if (materialRef.current) {
+        materialRef.current.uniforms.isStatic.value = isStatic ? 1.0 : 0.0;
+        materialRef.current.uniforms.selection.value.set(rangeStart, rangeEnd);
+    }
+  }, [isStatic, rangeStart, rangeEnd]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: '150px' }} />;
 };

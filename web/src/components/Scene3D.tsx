@@ -2,26 +2,17 @@ import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
 interface Scene3DProps {
-    orientation: { w: number, x: number, y: number, z: number } | null;
+    telemetryRef: React.MutableRefObject<number[] | null>;
 }
 
-const Scene3D: React.FC<Scene3DProps> = ({ orientation }) => {
+const Scene3D: React.FC<Scene3DProps> = ({ telemetryRef }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const boxRef = useRef<THREE.Mesh | null>(null);
-
-    const telemetryRef = useRef<number[] | null>(null);
-
-    useEffect(() => {
-        const handleTelemetry = (e: CustomEvent) => {
-            telemetryRef.current = e.detail; // Catch Android format [w, x, y, z] to ref
-        };
-
-        window.addEventListener('flux-telemetry', handleTelemetry as EventListener);
-        return () => window.removeEventListener('flux-telemetry', handleTelemetry as EventListener);
-    }, []);
+    const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
     useEffect(() => {
-        if (!containerRef.current) return;
+        const container = containerRef.current;
+        if (!container) return;
 
         const scene = new THREE.Scene();
         const camera = new THREE.PerspectiveCamera(75, containerRef.current.clientWidth / containerRef.current.clientHeight, 0.1, 1000);
@@ -30,6 +21,7 @@ const Scene3D: React.FC<Scene3DProps> = ({ orientation }) => {
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
         containerRef.current.appendChild(renderer.domElement);
+        rendererRef.current = renderer;
 
         // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
@@ -38,28 +30,45 @@ const Scene3D: React.FC<Scene3DProps> = ({ orientation }) => {
         pointLight.position.set(5, 5, 5);
         scene.add(pointLight);
 
+        // Wrapper group to separate telemetry rotation from ambient system spin
+        const phoneGroup = new THREE.Group();
+        scene.add(phoneGroup);
+        phoneGroup.rotation.x = Math.PI * -.5
         // Phone Proxy (Glassy Box)
-        const geometry = new THREE.BoxGeometry(2, .2, 4);
-        const material = new THREE.MeshPhysicalMaterial({
+        const geometry = new THREE.BoxGeometry(2, 4, .2);
+        const material = new THREE.MeshStandardMaterial({
             color: 0x00CCFF,
-            metalness: 0.9,
-            roughness: 0.1,
-            transmission: 0.5,
-            thickness: 0.5,
+            metalness: 0.8,
+            roughness: 0.2,
         });
         const box = new THREE.Mesh(geometry, material);
         boxRef.current = box;
-        scene.add(box);
+        phoneGroup.add(box);
 
         let animId: number;
         const animate = () => {
+            animId = requestAnimationFrame(animate);
+            if (!rendererRef.current || !containerRef.current) return;
+
+            // Layout Sync Check (Standard Three.js Pattern)
+            const canvas = renderer.domElement;
+            const width = containerRef.current.clientWidth;
+            const height = containerRef.current.clientHeight;
+            const needResize = canvas.width !== width || canvas.height !== height;
+
+            if (needResize && width > 0 && height > 0) {
+                renderer.setSize(width, height, false);
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+            }
+
+            // Apply specific orientation to the nested mesh
             if (boxRef.current && telemetryRef.current) {
                 const q = telemetryRef.current;
-                // Three.js format: .set(x, y, z, w)
-                boxRef.current.quaternion.set(q[1], q[2], q[3], q[0]);
+                boxRef.current.quaternion.set(q[1], q[2], q[3], q[0]).normalize();
             }
+
             renderer.render(scene, camera);
-            animId = requestAnimationFrame(animate);
         };
         animate();
 
@@ -68,11 +77,11 @@ const Scene3D: React.FC<Scene3DProps> = ({ orientation }) => {
             renderer.dispose();
             geometry.dispose();
             material.dispose();
-            if (containerRef.current && renderer.domElement.parentNode === containerRef.current) {
-                containerRef.current.removeChild(renderer.domElement);
+            if (container && renderer.domElement.parentNode === container) {
+                container.removeChild(renderer.domElement);
             }
         };
-    }, []);
+    }, [telemetryRef]);
 
     return <div ref={containerRef} className="w-full h-full" />;
 };

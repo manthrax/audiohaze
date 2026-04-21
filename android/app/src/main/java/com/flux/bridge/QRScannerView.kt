@@ -78,7 +78,7 @@ fun QRScannerView(onCodeScanned: (String) -> Unit) {
                         lifecycleOwner, selector, preview, imageAnalysis
                     )
                 } catch (e: Exception) {
-                    android.util.Log.e("FLUX_DEBUG", "Binding failed", e)
+                    android.util.Log.e("HAZE_DEBUG", "Binding failed", e)
                 }
 
                 previewView
@@ -126,7 +126,7 @@ fun QRScannerView(onCodeScanned: (String) -> Unit) {
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "WAITING_FOR_FLUX_TOKEN...",
+                    "WAITING_FOR_HAZE_TOKEN...",
                     color = Color.Gray,
                     fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace
@@ -164,7 +164,7 @@ private fun processImageProxy(
             .addOnSuccessListener { barcodes ->
                 for (barcode in barcodes) {
                     barcode.rawValue?.let { 
-                        if (it.startsWith("flux://", ignoreCase = true)) {
+                        if (it.startsWith("haze://", ignoreCase = true)) {
                             onCodeScanned(it)
                         }
                     }
