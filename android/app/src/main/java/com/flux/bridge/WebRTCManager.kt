@@ -269,7 +269,7 @@ class WebRTCManager(private val context: Context, private val listener: WebRTCLi
         return bmp
     }
 
-    private fun sendData(json: String) {
+    fun sendData(json: String) {
         if (dataChannel?.state() == DataChannel.State.OPEN) {
             try {
                 val buffer = DataChannel.Buffer(

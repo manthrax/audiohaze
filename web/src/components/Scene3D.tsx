@@ -4,9 +4,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 interface Scene3DProps {
     telemetryRef: React.MutableRefObject<number[] | null>;
+    touchRef: React.MutableRefObject<number[][] | null>;
 }
 
-export const Scene3D: React.FC<Scene3DProps> = ({ telemetryRef }) => {
+export const Scene3D: React.FC<Scene3DProps> = ({ telemetryRef, touchRef }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const boxRef = useRef<THREE.Mesh | null>(null);
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -87,6 +88,19 @@ export const Scene3D: React.FC<Scene3DProps> = ({ telemetryRef }) => {
             boxRef.current = box;
             phoneGroup.add(box);
 
+            // Multi-touch marker pool
+            const markerPool: THREE.Mesh[] = [];
+            for (let i = 0; i < 10; i++) {
+                const marker = new THREE.Mesh(
+                    new THREE.RingGeometry(0.08, 0.12, 32),
+                    new THREE.MeshBasicMaterial({ color: 0x00CCFF, transparent: true, opacity: 0, side: THREE.DoubleSide })
+                );
+                marker.visible = false;
+                box.add(marker);
+                marker.position.z = 0.11;
+                markerPool.push(marker);
+            }
+
             const maxPoints = 1000;
             const trailPositions = new Float32Array(maxPoints * 3);
             const trailGeometry = new THREE.BufferGeometry();
@@ -119,10 +133,47 @@ export const Scene3D: React.FC<Scene3DProps> = ({ telemetryRef }) => {
                             lastTrailUpdate = now;
                         }
                     }
-                    // Keep camera centered on device
+                    // Camera Tracking & Automated Orbit
                     const worldPos = new THREE.Vector3();
+                    const worldQuat = new THREE.Quaternion();
                     boxRef.current.getWorldPosition(worldPos);
+                    boxRef.current.getWorldQuaternion(worldQuat);
+
+                    // IDEAL POSITION: 6 units away from the front face (local +Z)
+                    const offset = new THREE.Vector3(0, 0, 6);
+                    offset.applyQuaternion(worldQuat);
+                    const idealCamPos = worldPos.clone().add(offset);
+                    
+                    // Smoothly transition camera and target
+                    camera.position.lerp(idealCamPos, 0.05);
                     controls.target.lerp(worldPos, 0.1);
+
+                    // Update touch markers
+                    const touches = touchRef.current;
+                    if (touches) {
+                        touches.forEach((touch, i) => {
+                            if (i < markerPool.length) {
+                                const m = markerPool[i];
+                                m.visible = true;
+                                m.position.x = (touch[1] * 2) - 1;
+                                m.position.y = 2 - (touch[2] * 4);
+                                const pressure = touch[3] || 1.0;
+                                m.scale.setScalar(0.5 + pressure * 1.5);
+                                (m.material as THREE.MeshBasicMaterial).opacity = 1.0;
+                            }
+                        });
+                        touchRef.current = null;
+                    }
+
+                    // Decay all markers
+                    markerPool.forEach(m => {
+                        if (m.visible) {
+                            (m.material as THREE.MeshBasicMaterial).opacity *= 0.9;
+                            if ((m.material as THREE.MeshBasicMaterial).opacity < 0.01) {
+                                m.visible = false;
+                            }
+                        }
+                    });
                 }
                 controls.update();
                 renderer.render(scene, camera);
@@ -160,7 +211,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({ telemetryRef }) => {
         return () => {
             if (typeof cleanup === 'function') cleanup();
         };
-    }, [telemetryRef]);
+    }, [telemetryRef, touchRef]);
 
     return (
         <div ref={containerRef} className="w-full h-full min-h-[300px] relative bg-[#050505] border-2 border-red-500/20 overflow-hidden">

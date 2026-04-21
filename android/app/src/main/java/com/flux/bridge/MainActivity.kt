@@ -23,6 +23,8 @@ import android.provider.Settings
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 
 class MainActivity : ComponentActivity() {
 
@@ -151,21 +153,24 @@ class MainActivity : ComponentActivity() {
                             AnswerQRScreen(answerSignal ?: "INVALID") { currentStep = "scan" }
                         }
                         "active" -> {
-                            ActiveBridgeScreen(
-                                deployStatus = deployStatus,
-                                bgStreaming = bgStreaming,
-                                onBgToggle = {
-                                    bgStreaming = it
-                                    keepBackground = it
-                                },
-                                onDisconnect = {
-                                    rtcManager.close()
-                                    sensorBridge.stop()
-                                    deployStatus = null
-                                    answerSignal = null
-                                    currentStep = "scan"
-                                }
-                            )
+                        ActiveBridgeScreen(
+                            deployStatus = deployStatus,
+                            bgStreaming = bgStreaming,
+                            onBgToggle = { 
+                                bgStreaming = it 
+                                keepBackground = it
+                            },
+                            onMultiTouch = { json ->
+                                rtcManager.sendData(json)
+                            },
+                            onDisconnect = {
+                                rtcManager.close()
+                                sensorBridge.stop()
+                                deployStatus = null
+                                answerSignal = null
+                                currentStep = "scan"
+                            }
+                        )
                         }
                     }
                 }
@@ -288,10 +293,36 @@ fun ActiveBridgeScreen(
     deployStatus: String?, 
     bgStreaming: Boolean,
     onBgToggle: (Boolean) -> Unit,
+    onMultiTouch: (String) -> Unit,
     onDisconnect: () -> Unit
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp)
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val touches = org.json.JSONArray()
+                        event.changes.forEach { change ->
+                            if (change.pressed) {
+                                val touch = org.json.JSONArray()
+                                touch.put(change.id.value.toInt())
+                                touch.put(change.position.x / size.width)
+                                touch.put(change.position.y / size.height)
+                                touch.put(change.pressure)
+                                touches.put(touch)
+                            }
+                        }
+                        if (touches.length() > 0) {
+                            val json = org.json.JSONObject()
+                            json.put("m", touches) // "m" for multi-touch
+                            onMultiTouch(json.toString())
+                        }
+                    }
+                }
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {

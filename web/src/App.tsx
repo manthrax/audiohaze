@@ -24,6 +24,7 @@ function App() {
   // App Core States
   const [isRecording, setIsRecording] = useState(false)
   const [hasAudio, setHasAudio] = useState(false)
+  const [isPlaying, setIsPlaying] = useState(false)
   const [range, setRange] = useState<[number, number]>([0, 1])
   
   // Connection States
@@ -39,6 +40,7 @@ function App() {
 
   // Telemetry Cache
   const telemetryRef = useRef<number[] | null>(null)
+  const touchRef = useRef<number[][] | null>(null)
   const [orientation, setOrientation] = useState<Orientation | null>(null)
 
   // System References
@@ -85,7 +87,13 @@ function App() {
   }
 
   const handleAudition = () => {
-    audioEngine.playCurrentBuffer()
+    if (isPlaying) {
+      audioEngine.stopPlayback()
+      setIsPlaying(false)
+    } else {
+      setIsPlaying(true)
+      audioEngine.playCurrentBuffer(() => setIsPlaying(false))
+    }
   }
 
   const terminateAudio = () => {
@@ -144,6 +152,9 @@ function App() {
                       pz: json.q[6],
                   })
               }
+          }
+          if (json.m) {
+              touchRef.current = json.m;
           }
           if (json.type === 'discovery') {
               setAvailableSlots(json.slots)
@@ -396,13 +407,13 @@ function App() {
 
                   <div className="w-px h-3 bg-white/10 mx-0.5" />
 
-                  <button 
+                   <button 
                       onClick={handleAudition}
-                      disabled={!hasAudio}
-                      className={`p-1.5 rounded transition-all ${hasAudio ? 'text-[#00CCFF] hover:bg-[#00CCFF]/10' : 'text-zinc-600 cursor-not-allowed'}`}
-                      title="Play Buffer"
+                      disabled={!hasAudio && !isPlaying}
+                      className={`p-1.5 rounded transition-all ${hasAudio || isPlaying ? 'text-[#00CCFF] hover:bg-[#00CCFF]/10' : 'text-zinc-600 cursor-not-allowed'}`}
+                      title={isPlaying ? "Stop Audition" : "Play Buffer"}
                   >
-                      <Play className="w-3 h-3" />
+                      {isPlaying ? <Square className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3" />}
                   </button>
 
                   <button 
@@ -527,7 +538,7 @@ function App() {
       >
           <div className="flex flex-col h-full bg-black/60 shadow-inner rounded border border-white/5 overflow-hidden m-2">
               <div className="flex-1 relative flex flex-col">
-                  <Scene3D telemetryRef={telemetryRef} />
+                  <Scene3D telemetryRef={telemetryRef} touchRef={touchRef} />
                   <div className="absolute top-2 left-2 flex items-center gap-1.5">
                       <div className={`w-1 h-1 rounded ${isConnected ? 'bg-[#00CCFF] animate-pulse shadow-[0_0_5px_#00ccff]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
                       <span className="text-[8px] font-mono text-zinc-400 shadow-sm uppercase tracking-widest">

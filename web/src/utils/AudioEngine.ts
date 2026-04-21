@@ -11,6 +11,7 @@ export class AudioEngine {
   private activeSamples = 0;
   private gainNode: GainNode | null = null;
   public isRecording = false;
+  private activeSource: AudioBufferSourceNode | null = null;
 
   isReady(): boolean {
     return this.audioContext !== null && this.audioContext.state === 'running';
@@ -171,16 +172,39 @@ export class AudioEngine {
     this.gainNode = null;
   }
 
-  async playCurrentBuffer() {
+  async playCurrentBuffer(onEnded?: () => void) {
     if (!this.audioContext) return;
+    this.stopPlayback(); // Stop any existing audition
+
     const data = this.getBufferData();
+    if (data.length === 0) return;
+
     const audioBuffer = this.audioContext.createBuffer(1, data.length, 44100);
     audioBuffer.getChannelData(0).set(data);
     
     const source = this.audioContext.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(this.audioContext.destination);
+    
+    source.onended = () => {
+        if (this.activeSource === source) {
+            this.activeSource = null;
+        }
+        onEnded?.();
+    };
+
+    this.activeSource = source;
     source.start();
+    return source;
+  }
+
+  stopPlayback() {
+    if (this.activeSource) {
+        try {
+            this.activeSource.stop();
+        } catch (e) {}
+        this.activeSource = null;
+    }
   }
 
   /**

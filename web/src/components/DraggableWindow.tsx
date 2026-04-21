@@ -63,14 +63,14 @@ export const DraggableWindow: React.FC<DraggableWindowProps> = ({
             {/* Title Bar - Draggable Area */}
             <div 
                 ref={windowRef}
-                className="h-8 w-full bg-black/40 border-b border-white/5 flex items-center px-3 cursor-grab active:cursor-grabbing select-none"
+                className="h-6 w-full bg-black/40 border-b border-white/5 flex items-center px-1.5 cursor-grab active:cursor-grabbing select-none"
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onContextMenu={e => e.preventDefault()}
             >
-                {icon && <div className="mr-2 h-4 w-4 text-[#00CCFF]">{icon}</div>}
-                <span className="text-[10px] uppercase font-mono tracking-widest text-zinc-400 font-bold">{title}</span>
+                {icon && <div className="mr-1 h-3 w-3 text-[#00CCFF]">{icon}</div>}
+                <span className="text-[9px] uppercase font-mono tracking-widest text-zinc-400 font-bold">{title}</span>
             </div>
 
             {/* Window Content */}
