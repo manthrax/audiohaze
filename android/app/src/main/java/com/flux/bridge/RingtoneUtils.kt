@@ -17,9 +17,9 @@ object RingtoneUtils {
     fun setSystemSound(context: Context, file: File, slot: String): Boolean {
         try {
             val contentValues = ContentValues().apply {
-                put(MediaStore.MediaColumns.DATA, file.absolutePath)
-                put(MediaStore.MediaColumns.TITLE, "Flux_" + file.nameWithoutExtension)
-                put(MediaStore.MediaColumns.MIME_TYPE, "audio/ogg")
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "Haze_" + file.nameWithoutExtension + ".wav")
+                put(MediaStore.MediaColumns.TITLE, "Haze_" + file.nameWithoutExtension)
+                put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
                 
                 // Assign based on slot type
                 when (slot.uppercase()) {
@@ -29,19 +29,19 @@ object RingtoneUtils {
                 }
             }
 
-            // Delete old entry if it exists to avoid duplicates
-            context.contentResolver.delete(
-                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                MediaStore.MediaColumns.DATA + "=?",
-                arrayOf(file.absolutePath)
-            )
-
             val newUri = context.contentResolver.insert(
                 MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, 
                 contentValues
             )
 
             if (newUri != null) {
+                // Copy the raw file data into the secure MediaStore location
+                context.contentResolver.openOutputStream(newUri)?.use { os ->
+                    file.inputStream().use { inputStream ->
+                        inputStream.copyTo(os)
+                    }
+                }
+
                 val ringtoneType = when (slot.uppercase()) {
                     "RINGTONE" -> RingtoneManager.TYPE_RINGTONE
                     "NOTIFICATION" -> RingtoneManager.TYPE_NOTIFICATION
@@ -50,25 +50,30 @@ object RingtoneUtils {
                 }
 
                 RingtoneManager.setActualDefaultRingtoneUri(context, ringtoneType, newUri)
-                Log.d("FluxBridge", "Successfully set system sound ($slot): $newUri")
+                Log.d("HAZE_DEBUG", "Successfully set system sound ($slot): $newUri")
                 return true
             }
         } catch (e: Exception) {
-            Log.e("FluxBridge", "Failed to set system sound", e)
+            Log.e("HAZE_DEBUG", "Failed to set system sound", e)
         }
         return false
     }
+
+    private var mediaPlayer: android.media.MediaPlayer? = null
 
     /**
      * Plays the audio file for testing purposes.
      */
     fun playPreview(context: Context, file: File) {
         try {
-            val ringtoneUri = Uri.fromFile(file)
-            val ringtone = RingtoneManager.getRingtone(context, ringtoneUri)
-            ringtone.play()
+            mediaPlayer?.release()
+            mediaPlayer = android.media.MediaPlayer().apply {
+                setDataSource(file.absolutePath)
+                prepare()
+                start()
+            }
         } catch (e: Exception) {
-            Log.e("FluxBridge", "Preview playback failed", e)
+            Log.e("HAZE_DEBUG", "Preview playback failed", e)
         }
     }
 
