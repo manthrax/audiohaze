@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { AudioEngine } from './utils/AudioEngine'
 import { WaveformVisualizer } from './components/WaveformVisualizer'
 import { Scene3D } from './components/Scene3D'
-import { Zap, Radio, Save, Activity, Layers, PlayCircle, Send, CheckCircle, Wifi, MonitorSpeaker, Pause, Circle, RefreshCcw, Trash2, Play, Square, Download } from 'lucide-react'
+import { Zap, Radio, Save, Activity, Layers, PlayCircle, Send, CheckCircle, Wifi, MonitorSpeaker, Circle, RefreshCcw, Play, Square, Download } from 'lucide-react'
 import Peer from 'simple-peer'
 import { decodeSignal, encodeSignal, toHazeUri } from './utils/signaling'
 import jsQR from 'jsqr'
@@ -96,11 +96,6 @@ function App() {
     }
   }
 
-  const terminateAudio = () => {
-    audioEngine.terminate()
-    setIsRecording(false)
-    setHasAudio(false)
-  }
 
   // ----- Connection Handling -----
   useEffect(() => {
